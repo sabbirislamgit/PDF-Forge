@@ -33,6 +33,8 @@ interface ThumbnailSidebarProps {
   modifications: DocumentModifications;
   matches: ObjectMatch[];
   isOpen?: boolean;
+  width?: number;
+  onWidthChange?: (width: number) => void;
   onClose?: () => void;
   onSelectPage: (index: number) => void;
   onReorderPages?: (fromIndex: number, toIndex: number) => void;
@@ -492,6 +494,8 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
   modifications,
   matches,
   isOpen = true,
+  width = 216,
+  onWidthChange,
   onClose,
   onSelectPage,
   onReorderPages,
@@ -563,14 +567,15 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
       const p = pages[i];
       const w = Math.max(1, p.width || 612);
       const h = Math.max(1, p.height || 792);
-      // Card width inside sidebar is ~166px; add ~42px for padding + label row + gap
-      const estThumbHeight = Math.round((166 / w) * h) + 42;
+      // Card width inside sidebar scales with panel width; add ~42px for padding + label row + gap
+      const cardInnerW = Math.max(120, width - 42);
+      const estThumbHeight = Math.round((cardInnerW / w) * h) + 42;
       offsets.push(currentTop);
       heights.push(estThumbHeight);
       currentTop += estThumbHeight;
     }
     return { offsets, heights, totalHeight: currentTop };
-  }, [pages]);
+  }, [pages, width]);
 
   // Keep active thumbnail visible in scroll container (works even when target is virtualized)
   useEffect(() => {
@@ -702,6 +707,30 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
     setDropIndicator(null);
   };
 
+  const handleStartResize = (e: React.MouseEvent) => {
+    if (!onWidthChange) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = width;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX;
+      const nextWidth = Math.max(168, Math.min(340, startWidth + delta));
+      onWidthChange(nextWidth);
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
   if (!isOpen) {
     return null;
   }
@@ -717,15 +746,18 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
         />
       )}
 
-      <aside className="fixed lg:static inset-y-0 left-0 w-56 lg:w-52 bg-[#1a1a1a] border-r border-[#323232] flex flex-col h-full select-none z-40 lg:z-10 shrink-0 shadow-2xl lg:shadow-none">
+      <aside
+        style={{ width: `${width}px` }}
+        className="fixed lg:relative inset-y-0 left-0 bg-[#16171c] border-r border-[#262830] flex flex-col h-full select-none z-40 lg:z-10 shrink-0 shadow-2xl lg:shadow-none"
+      >
         {/* Sidebar Header */}
-        <div className="px-3.5 py-2.5 border-b border-[#303030] flex items-center justify-between">
-          <span className="text-xs font-bold uppercase tracking-wider text-neutral-400">
+        <div className="h-9 px-3 border-b border-[#262830] flex items-center justify-between shrink-0 bg-[#14151a]">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-300">
             Pages ({pages.length})
           </span>
-          <div className="flex items-center space-x-1.5">
+          <div className="flex items-center space-x-1">
             {matches.length > 0 && (
-              <span className="text-[11px] font-semibold text-cyan-400 flex items-center space-x-1">
+              <span className="text-[10.5px] font-semibold text-cyan-400 flex items-center space-x-1 px-1.5 py-0.5 rounded bg-cyan-500/10">
                 <Sparkles className="w-3 h-3" />
                 <span>{matches.length}</span>
               </span>
@@ -734,9 +766,9 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
               <button
                 type="button"
                 onClick={onOpenAddBlankPage}
-                title="Add Blank Page"
-                aria-label="Add Blank Page"
-                className="p-1 text-neutral-400 hover:text-white hover:bg-[#2a2a2a] rounded transition duration-150 cursor-pointer"
+                title="Insert Blank Page"
+                aria-label="Insert Blank Page"
+                className="p-1 text-neutral-400 hover:text-white hover:bg-[#252730] rounded transition duration-150 cursor-pointer"
               >
                 <FilePlus2 className="w-3.5 h-3.5 text-blue-400" />
               </button>
@@ -745,15 +777,24 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                title="Close Pages Sidebar"
-                aria-label="Close Pages Sidebar"
-                className="p-1 text-neutral-400 hover:text-white hover:bg-[#2a2a2a] rounded transition duration-150 cursor-pointer lg:hidden"
+                title="Collapse Pages Panel"
+                aria-label="Collapse Pages Panel"
+                className="p-1 text-neutral-400 hover:text-white hover:bg-[#252730] rounded transition duration-150 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
         </div>
+
+        {/* Right Edge Resize Handle (Desktop) */}
+        {onWidthChange && (
+          <div
+            onMouseDown={handleStartResize}
+            title="Drag to resize Pages panel"
+            className="hidden lg:block absolute top-0 right-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/50 active:bg-blue-500 transition-colors z-30"
+          />
+        )}
 
         {/* Virtualized Thumbnails List with Drag-and-Drop Reordering */}
         <div

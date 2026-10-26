@@ -31,6 +31,8 @@ import {
   RotateCcw,
   RotateCw,
   Eye,
+  MousePointer,
+  PenTool,
 } from 'lucide-react';
 
 interface ObjectInspectorProps {
@@ -67,6 +69,8 @@ interface ObjectInspectorProps {
   onNavigateToPage: (pageIndex: number) => void;
   onSetTool: (tool: ToolMode) => void;
   isOpen?: boolean;
+  width?: number;
+  onWidthChange?: (width: number) => void;
   onClose?: () => void;
 }
 
@@ -118,11 +122,37 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
   onNavigateToPage,
   onSetTool,
   isOpen = true,
+  width = 320,
+  onWidthChange,
   onClose,
 }) => {
   const isEditingInline = Boolean(
     selectedObject && editingTextObjectId === selectedObject.id
   );
+
+  const handleStartResize = (e: React.MouseEvent) => {
+    if (!onWidthChange) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = width;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const delta = startX - moveEvent.clientX;
+      const nextWidth = Math.max(264, Math.min(460, startWidth + delta));
+      onWidthChange(nextWidth);
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
 
   if (!isOpen) {
     return null;
@@ -139,11 +169,23 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
         />
       )}
 
-      <aside className="fixed lg:static inset-y-0 right-0 w-80 max-w-[90vw] bg-[#1e1e1e] border-l border-[#323232] flex flex-col h-full select-none z-40 lg:z-10 shrink-0 shadow-2xl lg:shadow-none">
+      <aside
+        style={{ width: `${width}px` }}
+        className="fixed lg:relative inset-y-0 right-0 max-w-[90vw] bg-[#16171c] border-l border-[#262830] flex flex-col h-full select-none z-40 lg:z-10 shrink-0 shadow-2xl lg:shadow-none"
+      >
+        {/* Left Edge Resize Handle (Desktop) */}
+        {onWidthChange && (
+          <div
+            onMouseDown={handleStartResize}
+            title="Drag to resize Inspector panel"
+            className="hidden lg:block absolute top-0 left-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/50 active:bg-blue-500 transition-colors z-30"
+          />
+        )}
+
         {/* Panel Header */}
-        <div className="px-4 py-3 border-b border-[#323232] flex items-center justify-between">
-          <span className="text-xs font-bold uppercase tracking-wider text-neutral-400">
-            Inspector & Tools
+        <div className="h-9 px-3.5 border-b border-[#262830] flex items-center justify-between shrink-0 bg-[#14151a]">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-300">
+            Inspector &amp; Tools
           </span>
           <div className="flex items-center space-x-1.5">
             {copiedObject && (
@@ -155,9 +197,9 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                title="Close Inspector Panel"
-                aria-label="Close Inspector Panel"
-                className="p-1 text-neutral-400 hover:text-white hover:bg-[#2a2a2a] rounded transition duration-150 cursor-pointer lg:hidden"
+                title="Collapse Inspector Panel"
+                aria-label="Collapse Inspector Panel"
+                className="p-1 text-neutral-400 hover:text-white hover:bg-[#252730] rounded transition duration-150 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -805,36 +847,83 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
             )}
 
             {/* Tool Mode Quick Toggle Card */}
-            <div className="bg-[#252526] p-3.5 rounded-xl border border-[#383838] space-y-2.5">
-              <span className="text-xs font-bold text-white block">Active Tool Mode</span>
-              <div className="grid grid-cols-2 gap-2">
+            <div className="bg-[#1e2027] p-3.5 rounded-xl border border-[#2c2f3a] space-y-2.5">
+              <span className="text-xs font-bold text-white block">Active Editor Tool</span>
+              <div className="grid grid-cols-2 gap-1.5">
                 <button
+                  type="button"
                   onClick={() => onSetTool('select')}
                   className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
                     activeTool === 'select'
                       ? 'bg-[#0265dc] text-white shadow-xs'
-                      : 'bg-[#1e1e1e] hover:bg-[#2e2e2e] text-neutral-300'
+                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
                   }`}
                 >
-                  <Check className={`w-3 h-3 ${activeTool === 'select' ? 'opacity-100' : 'opacity-0'}`} />
-                  <span>Select Object</span>
+                  <MousePointer className="w-3.5 h-3.5" />
+                  <span>Select</span>
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => onSetTool('crop')}
                   className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
                     activeTool === 'crop'
                       ? 'bg-[#0265dc] text-white shadow-xs'
-                      : 'bg-[#1e1e1e] hover:bg-[#2e2e2e] text-neutral-300'
+                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
                   }`}
                 >
                   <CropIcon className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Crop Area</span>
+                  <span>Crop</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onSetTool('text')}
+                  className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
+                    activeTool === 'text'
+                      ? 'bg-[#0265dc] text-white shadow-xs'
+                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
+                  }`}
+                >
+                  <TypeIcon className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Text</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onSetTool('image')}
+                  className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
+                    activeTool === 'image'
+                      ? 'bg-[#0265dc] text-white shadow-xs'
+                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
+                  }`}
+                >
+                  <ImageIcon className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Image</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onSetTool('draw')}
+                  className={`col-span-2 p-2 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1.5 transition duration-150 cursor-pointer ${
+                    activeTool === 'draw'
+                      ? 'bg-[#0265dc] text-white shadow-xs'
+                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
+                  }`}
+                >
+                  <PenTool className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Freehand Draw</span>
                 </button>
               </div>
               <p className="text-[11px] text-neutral-400 leading-normal">
                 {activeTool === 'crop'
-                  ? 'Click and drag a rectangular box on the page to crop and copy any area.'
+                  ? 'Drag a rectangle on any page to crop or copy that region.'
+                  : activeTool === 'text'
+                  ? 'Click anywhere on a PDF page to add a movable, resizable text box.'
+                  : activeTool === 'image'
+                  ? 'Click on a page or drop an image file to place a resizable image.'
+                  : activeTool === 'draw'
+                  ? 'Draw directly on the page to create a movable, resizable stroke object.'
                   : 'Click any object to move/resize, or double-click any text to edit inline.'}
               </p>
             </div>

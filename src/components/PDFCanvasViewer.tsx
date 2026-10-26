@@ -2490,8 +2490,8 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
 
       {/* FLOATING CLIPBOARD PREVIEW */}
       {copiedObject && (
-        <div className="fixed bottom-16 sm:bottom-6 left-3 sm:left-6 lg:left-56 z-30 max-w-[calc(100vw-1.5rem)] bg-[#1e1e1e]/95 backdrop-blur-md border border-[#3c3c3c] rounded-xl shadow-2xl p-2.5 sm:p-3 flex items-center space-x-2.5 sm:space-x-3 text-xs animate-in slide-in-from-bottom-3 duration-150">
-          <div className="w-10 h-10 sm:w-12 sm:h-12 bg-black/40 rounded-lg border border-[#303030] overflow-hidden flex items-center justify-center shrink-0">
+        <div className="fixed bottom-11 left-3 sm:left-6 lg:left-60 z-30 max-w-[calc(100vw-1.5rem)] bg-[#181920]/95 backdrop-blur-md border border-[#2e303c] rounded-xl shadow-2xl p-2.5 flex items-center space-x-2.5 text-xs animate-in slide-in-from-bottom-3 duration-150">
+          <div className="w-10 h-10 bg-black/40 rounded-lg border border-[#2a2c36] overflow-hidden flex items-center justify-center shrink-0">
             {copiedObject.imageDataUrl ? (
               <img
                 src={copiedObject.imageDataUrl}
@@ -2499,11 +2499,11 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
                 className="max-w-full max-h-full object-contain"
               />
             ) : (
-              <Type className="w-5 h-5 text-amber-400" />
+              <Type className="w-4 h-4 text-amber-400" />
             )}
           </div>
 
-          <div className="space-y-0.5 sm:space-y-1 min-w-0">
+          <div className="space-y-0.5 min-w-0">
             <div className="flex items-center space-x-1.5">
               <span className="font-semibold text-white truncate">Copied</span>
               <span className="text-[10px] text-blue-400 font-mono bg-blue-950/60 border border-blue-800/60 px-1 py-0.2 rounded shrink-0">
@@ -2515,12 +2515,12 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center space-x-1.5 pl-2 border-l border-[#333333] shrink-0">
+          <div className="flex items-center space-x-1.5 pl-2 border-l border-[#2a2c36] shrink-0">
             <button
               onClick={onPasteObject}
               title="Paste to active page (Ctrl+V)"
               aria-label="Paste to Current Page"
-              className="px-2.5 sm:px-3 py-1.5 bg-[#0265dc] hover:bg-[#0151b0] text-white font-semibold rounded-lg text-xs flex items-center space-x-1 shadow-sm transition cursor-pointer"
+              className="px-2.5 py-1.5 bg-[#0265dc] hover:bg-[#0151b0] text-white font-semibold rounded-lg text-xs flex items-center space-x-1 shadow-sm transition cursor-pointer"
             >
               <ClipboardPaste className="w-3.5 h-3.5" />
               <span>Paste</span>
@@ -2530,7 +2530,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
               onClick={onClearClipboard}
               title="Clear Clipboard"
               aria-label="Clear Clipboard"
-              className="p-1.5 text-neutral-400 hover:text-white hover:bg-[#2c2c2c] rounded-lg transition cursor-pointer"
+              className="p-1.5 text-neutral-400 hover:text-white hover:bg-[#252730] rounded-lg transition cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -2538,8 +2538,8 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
         </div>
       )}
 
-      {/* FLOATING PAGE NAVIGATION HUD */}
-      <div className="fixed bottom-4 sm:bottom-6 right-3 sm:right-6 lg:right-84 z-30 bg-[#1e1e1e]/90 backdrop-blur-md border border-[#3c3c3c] rounded-full shadow-2xl px-2.5 sm:px-3 py-1.5 flex items-center space-x-1.5 sm:space-x-2 text-xs text-neutral-200">
+      {/* Quick Floating Page Stepper (mobile/compact convenience) */}
+      <div className="fixed bottom-10 right-4 z-20 sm:hidden bg-[#181920]/90 backdrop-blur-md border border-[#2e303c] rounded-lg shadow-xl px-2 py-1 flex items-center space-x-1.5 text-xs text-neutral-200">
         <button
           onClick={() => {
             const prev = Math.max(0, activePageIndex - 1);
@@ -2559,7 +2559,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
         </button>
 
         <span className="font-mono text-xs font-semibold px-1 text-neutral-300">
-          Page <span className="text-white">{activePageIndex + 1}</span> / {pages.length}
+          <span className="text-white">{activePageIndex + 1}</span>/{pages.length}
         </span>
 
         <button

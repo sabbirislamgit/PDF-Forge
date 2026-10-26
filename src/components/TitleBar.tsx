@@ -19,12 +19,10 @@ import {
   LayoutGrid,
   RotateCcw,
   RotateCw,
-  ChevronDown,
   ScanText,
   Search,
   Stamp,
   Hash,
-  Wrench,
   Sparkles,
   PanelLeft,
   PanelRight,
@@ -39,10 +37,15 @@ import {
   X,
   FilePlus2,
   Expand,
+  MoreHorizontal,
+  Files,
+  File,
+  Replace,
 } from 'lucide-react';
 import { ViewMode } from '../types/pdf';
 
 export type ToolMode = 'select' | 'text' | 'image' | 'draw' | 'crop';
+export type RibbonTab = 'file' | 'home' | 'edit' | 'organize' | 'view';
 
 export interface TitleBarProps {
   filename: string | null;
@@ -63,6 +66,9 @@ export interface TitleBarProps {
   isSidebarOpen?: boolean;
   isInspectorOpen?: boolean;
   matchCount?: number;
+  // Search box integration
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
   // Tool style settings for direct page tools (Text / Draw)
   drawColor?: string;
   onChangeDrawColor?: (color: string) => void;
@@ -117,30 +123,45 @@ export interface TitleBarProps {
 
 const DRAW_COLORS = ['#111827', '#dc2626', '#2563eb', '#16a34a', '#d97706', '#7c3aed'];
 
+interface OverflowItem {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  badge?: string | number;
+  danger?: boolean;
+}
+
 export const TitleBar: React.FC<TitleBarProps> = ({
   filename,
   pageCount = 1,
   currentPage = 1,
   zoom = 1,
   activeTool = 'select',
+  viewMode = 'continuous',
   canUndo = false,
   canRedo = false,
   hasModifications = false,
   hasSelectedObject = false,
   isProcessing = false,
   isProtected = false,
+  isFindReplaceOpen = false,
   scannedPageCount = 0,
   primaryMode = 'edit',
   isSidebarOpen = true,
   isInspectorOpen = true,
   matchCount = 0,
+  searchQuery = '',
+  onSearchQueryChange,
   drawColor = '#dc2626',
   onChangeDrawColor,
   drawStrokeWidth = 3,
   onChangeDrawStrokeWidth,
   textToolColor = '#111827',
   onChangeTextToolColor,
-  textToolFontSize = 16,
+  textToolFontSize = 14,
   onChangeTextToolFontSize,
   onTriggerUploadImageTool,
   isWindowMaximized = true,
@@ -153,10 +174,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenProtection,
   onOpenPageOrganizer,
   onToolChange,
+  onViewModeChange,
   onUndo,
   onRedo,
   onZoomChange,
   onFitWidth,
+  onFitPage,
   onFindSameObject,
   onHighlightSameObjectMatches,
   onReplaceSameObject,
@@ -178,23 +201,45 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onToggleSidebar,
   onToggleInspector,
 }) => {
+  const [activeTab, setActiveTab] = useState<RibbonTab>('home');
+  const [ribbonWidth, setRibbonWidth] = useState<number>(
+    typeof window !== 'undefined' ? window.innerWidth : 1280
+  );
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isTauri, setIsTauri] = useState(false);
   const [tauriMaximized, setTauriMaximized] = useState(false);
-  const [tauriFullscreen, setTauriFullscreen] = useState(false);
-
-  // Dropdown menus
-  const [isPageMenuOpen, setIsPageMenuOpen] = useState(false);
-  const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
-  const [isSameObjectMenuOpen, setIsSameObjectMenuOpen] = useState(false);
-  const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const pageMenuRef = useRef<HTMLDivElement>(null);
-  const toolsMenuRef = useRef<HTMLDivElement>(null);
-  const sameObjectMenuRef = useRef<HTMLDivElement>(null);
-  const saveMenuRef = useRef<HTMLDivElement>(null);
+  const ribbonRef = useRef<HTMLDivElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Tauri v2 runtime check
+  // Switch to Home or Edit tab automatically when a document is opened
+  const prevFilenameRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (filename && !prevFilenameRef.current) {
+      setActiveTab('home');
+    }
+    prevFilenameRef.current = filename;
+  }, [filename]);
+
+  // Measure ribbon container width with ResizeObserver to adapt tiers seamlessly
+  useEffect(() => {
+    const el = ribbonRef.current;
+    if (!el) return;
+    setRibbonWidth(el.clientWidth || window.innerWidth);
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.width > 0) {
+          setRibbonWidth(entry.contentRect.width);
+        }
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Tauri detection
   useEffect(() => {
     const checkTauri = async () => {
       try {
@@ -205,12 +250,8 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           setIsTauri(true);
           const { getCurrentWindow } = await import('@tauri-apps/api/window');
           const appWindow = getCurrentWindow();
-          const [maxState, fullState] = await Promise.all([
-            appWindow.isMaximized(),
-            appWindow.isFullscreen(),
-          ]);
+          const maxState = await appWindow.isMaximized();
           setTauriMaximized(maxState);
-          setTauriFullscreen(fullState);
         }
       } catch {
         setIsTauri(false);
@@ -219,28 +260,16 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     checkTauri();
   }, []);
 
-  // Close menus on outside click or Escape
+  // Close dropdown on outside click or Esc
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (pageMenuRef.current && !pageMenuRef.current.contains(e.target as Node)) {
-        setIsPageMenuOpen(false);
-      }
-      if (toolsMenuRef.current && !toolsMenuRef.current.contains(e.target as Node)) {
-        setIsToolsMenuOpen(false);
-      }
-      if (sameObjectMenuRef.current && !sameObjectMenuRef.current.contains(e.target as Node)) {
-        setIsSameObjectMenuOpen(false);
-      }
-      if (saveMenuRef.current && !saveMenuRef.current.contains(e.target as Node)) {
-        setIsSaveMenuOpen(false);
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setIsMoreMenuOpen(false);
       }
     };
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setIsPageMenuOpen(false);
-        setIsToolsMenuOpen(false);
-        setIsSameObjectMenuOpen(false);
-        setIsSaveMenuOpen(false);
+        setIsMoreMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -251,6 +280,19 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     };
   }, []);
 
+  // Keyboard shortcut listener for Ctrl+F to focus Title Bar search box
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        if (!e.defaultPrevented && searchInputRef.current) {
+          searchInputRef.current.focus();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const handleMinimize = async () => {
     if (isTauri) {
       try {
@@ -258,7 +300,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         await getCurrentWindow().minimize();
         return;
       } catch {
-        // Fallback to web minimize state
+        // Fallback
       }
     }
     onMinimizeWindow?.();
@@ -274,26 +316,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         setTauriMaximized(maxState);
         return;
       } catch {
-        // Fallback to web maximize/restore state
+        // Fallback
       }
     }
     onToggleWindowMaximize?.();
-  };
-
-  const handleToggleFullscreen = async () => {
-    if (isTauri) {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        const win = getCurrentWindow();
-        const currentFull = await win.isFullscreen();
-        await win.setFullscreen(!currentFull);
-        setTauriFullscreen(!currentFull);
-        return;
-      } catch {
-        // Fallback to browser fullscreen
-      }
-    }
-    onToggleFullscreen?.();
   };
 
   const handleClose = async () => {
@@ -303,777 +329,1188 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         await getCurrentWindow().close();
         return;
       } catch {
-        // Fallback to web close handler
+        // Fallback
       }
     }
     onCloseWindow?.();
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file && onFileSelected) {
-      onFileSelected(file);
-      e.target.value = '';
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isFindReplaceOpen) {
+      onToggleFindReplace?.();
     }
   };
 
+  const handleSearchChange = (val: string) => {
+    onSearchQueryChange?.(val);
+    if (!isFindReplaceOpen && val.trim().length > 0) {
+      onToggleFindReplace?.();
+    }
+  };
+
+  // Screen tiers:
+  // xl: >= 1180px (full size, labels, descriptions)
+  // lg: 960px - 1179px (compact padding, all tools visible with text)
+  // md: 740px - 959px (core tools with text, secondary tools compact/icon)
+  // sm: < 740px (essential tools pinned, overflow in More dropdown)
+  const isXl = ribbonWidth >= 1180;
+  const isLg = ribbonWidth >= 960;
+  const isMd = ribbonWidth >= 740;
+
   const effectiveMaximized = isTauri ? tauriMaximized : isWindowMaximized;
-  const effectiveFullscreen = isTauri ? tauriFullscreen : isFullscreen;
+
+  // Build the list of overflow items depending on the active tab when on smaller screens
+  const getTabOverflowItems = (): OverflowItem[] => {
+    const items: OverflowItem[] = [];
+
+    if (activeTab === 'home') {
+      if (!isMd) {
+        items.push({
+          id: 'search',
+          label: 'Find & Replace',
+          icon: <Search className="w-4 h-4 text-sky-400" />,
+          onClick: () => onToggleFindReplace?.(),
+          active: isFindReplaceOpen,
+        });
+        items.push({
+          id: 'ocr',
+          label: scannedPageCount > 0 ? `OCR Text (${scannedPageCount} scanned)` : 'OCR Text',
+          icon: <ScanText className="w-4 h-4 text-emerald-400" />,
+          onClick: () => onOpenOcrModal?.(),
+          badge: scannedPageCount > 0 ? scannedPageCount : undefined,
+        });
+        items.push({
+          id: 'protect',
+          label: isProtected ? 'Protection Enabled' : 'Protect PDF',
+          icon: <Shield className="w-4 h-4 text-indigo-400" />,
+          onClick: () => onOpenProtection?.(),
+        });
+        items.push({
+          id: 'shortcuts',
+          label: 'Keyboard Shortcuts',
+          icon: <Keyboard className="w-4 h-4 text-slate-400" />,
+          onClick: () => onOpenShortcuts?.(),
+        });
+      }
+    } else if (activeTab === 'edit') {
+      if (!isMd) {
+        items.push({
+          id: 'find-same',
+          label: matchCount > 0 ? `Find Same (${matchCount})` : 'Find Same Object',
+          icon: <Sparkles className="w-4 h-4 text-amber-400" />,
+          onClick: () => onFindSameObject?.(),
+          disabled: !hasSelectedObject,
+        });
+        items.push({
+          id: 'replace-same',
+          label: 'Replace Same Object',
+          icon: <Replace className="w-4 h-4 text-blue-400" />,
+          onClick: () => onReplaceSameObject?.(),
+          disabled: !hasSelectedObject,
+        });
+        items.push({
+          id: 'watermark',
+          label: 'Watermark',
+          icon: <Stamp className="w-4 h-4 text-teal-400" />,
+          onClick: () => onOpenWatermarkModal?.(),
+        });
+        items.push({
+          id: 'page-numbers',
+          label: 'Page Numbers',
+          icon: <Hash className="w-4 h-4 text-indigo-400" />,
+          onClick: () => onOpenPageNumberModal?.(),
+        });
+        items.push({
+          id: 'header-footer',
+          label: 'Header & Footer',
+          icon: <FileText className="w-4 h-4 text-sky-400" />,
+          onClick: () => onOpenHeaderFooterModal?.(),
+        });
+        items.push({
+          id: 'markup',
+          label: primaryMode === 'annotate' ? 'Switch to Edit Mode' : 'Markup & Notes Mode',
+          icon: <Pencil className="w-4 h-4 text-orange-400" />,
+          onClick: () => onChangePrimaryMode?.(primaryMode === 'annotate' ? 'edit' : 'annotate'),
+          active: primaryMode === 'annotate',
+        });
+      }
+    } else if (activeTab === 'organize') {
+      if (!isMd) {
+        items.push({
+          id: 'blank-page',
+          label: 'Add Blank Page',
+          icon: <FilePlus2 className="w-4 h-4 text-emerald-400" />,
+          onClick: () => onOpenAddBlankPage?.(),
+        });
+        items.push({
+          id: 'duplicate-page',
+          label: 'Duplicate Current Page',
+          icon: <CopyPlus className="w-4 h-4 text-sky-400" />,
+          onClick: () => onDuplicatePage?.(),
+        });
+        items.push({
+          id: 'delete-page',
+          label: 'Delete Page',
+          icon: <Trash2 className="w-4 h-4 text-rose-400" />,
+          onClick: () => onOpenDeletePage?.(),
+          danger: true,
+          disabled: pageCount <= 1,
+        });
+      }
+    } else if (activeTab === 'view') {
+      if (!isMd) {
+        items.push({
+          id: 'view-mode',
+          label: viewMode === 'continuous' ? 'Single Page View' : 'Continuous View',
+          icon: viewMode === 'continuous' ? <File className="w-4 h-4 text-slate-300" /> : <Files className="w-4 h-4 text-slate-300" />,
+          onClick: () => onViewModeChange?.(viewMode === 'continuous' ? 'single' : 'continuous'),
+        });
+        items.push({
+          id: 'sidebar-toggle',
+          label: isSidebarOpen ? 'Hide Pages Sidebar' : 'Show Pages Sidebar',
+          icon: <PanelLeft className="w-4 h-4 text-slate-300" />,
+          onClick: () => onToggleSidebar?.(),
+          active: isSidebarOpen,
+        });
+        items.push({
+          id: 'inspector-toggle',
+          label: isInspectorOpen ? 'Hide Inspector' : 'Show Inspector',
+          icon: <PanelRight className="w-4 h-4 text-slate-300" />,
+          onClick: () => onToggleInspector?.(),
+          active: isInspectorOpen,
+        });
+        items.push({
+          id: 'fullscreen-toggle',
+          label: isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen',
+          icon: <Maximize2 className="w-4 h-4 text-slate-300" />,
+          onClick: () => onToggleFullscreen?.(),
+        });
+      }
+    }
+
+    return items;
+  };
+
+  const overflowItems = getTabOverflowItems();
 
   return (
-    <div
-      data-tauri-drag-region
-      onDoubleClick={(e) => {
-        if (e.target === e.currentTarget) {
-          handleToggleMaximize();
-        }
-      }}
-      className="h-11 w-full bg-[#15161a] border-b border-[#282a32] flex items-center justify-between px-2.5 select-none text-xs text-neutral-300 z-50 shrink-0 gap-1.5"
-    >
+    <header className="flex flex-col bg-[#1c1d22] border-b border-[#2b2c35] text-zinc-200 select-none shrink-0 z-30">
+      {/* Hidden File Picker Input */}
       <input
         type="file"
         ref={fileInputRef}
-        onChange={handleFileChange}
         accept="application/pdf"
         className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            onFileSelected?.(file);
+          }
+          e.target.value = '';
+        }}
       />
 
-      {/* ── LEFT: Brand Wordmark, Open File, Sidebar Toggle & Undo/Redo ── */}
-      <div className="flex items-center space-x-1.5 shrink-0 pointer-events-auto">
-        <div
-          data-tauri-drag-region
-          onDoubleClick={handleToggleMaximize}
-          className="flex items-center space-x-2 pr-2.5 border-r border-[#2b2d36] mr-0.5 cursor-default"
-        >
-          <img
-            src="/app-logo.png"
-            alt="PDF Forge"
-            referrerPolicy="no-referrer"
-            className="w-5 h-5 rounded object-contain drop-shadow"
-          />
-          <span className="font-bold text-white tracking-tight text-[12.5px] whitespace-nowrap shrink-0">
+      {/* ================================================================= */}
+      {/* 1. TITLE BAR (Clean Fluent Window Bar - No editing tools)       */}
+      {/* ================================================================= */}
+      <div className="h-9 px-2 flex items-center justify-between bg-[#18181c] border-b border-[#25252b] text-xs">
+        {/* Left: PDF Forge Brand Logo & Title */}
+        <div className="flex items-center gap-2 min-w-0 pr-3">
+          <div className="w-5 h-5 rounded-[4px] bg-gradient-to-br from-red-500 via-rose-600 to-red-700 flex items-center justify-center shadow-xs shrink-0 ring-1 ring-white/10">
+            <span className="text-[10px] font-black text-white tracking-tighter">PF</span>
+          </div>
+          <span className="font-semibold text-xs tracking-wide text-zinc-100 shrink-0">
             PDF Forge
           </span>
-        </div>
-
-        {/* Open PDF */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          title="Open PDF File"
-          className="flex items-center space-x-1.5 px-2.5 py-1 bg-[#22242c] hover:bg-[#2a2d37] text-neutral-200 border border-[#343744] rounded text-[11.5px] font-medium transition cursor-pointer whitespace-nowrap shrink-0"
-        >
-          <FileUp className="w-3.5 h-3.5 text-blue-400" />
-          <span className="hidden md:inline">Open</span>
-        </button>
-
-        {/* Sidebar Toggle */}
-        {filename && onToggleSidebar && (
-          <button
-            type="button"
-            onClick={onToggleSidebar}
-            title={isSidebarOpen ? 'Hide Page Thumbnails Sidebar' : 'Show Page Thumbnails Sidebar'}
-            className={`p-1.5 rounded border transition cursor-pointer shrink-0 ${
-              isSidebarOpen
-                ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
-                : 'bg-[#202127] border-[#30323c] text-neutral-400 hover:text-white hover:bg-[#282a32]'
-            }`}
-          >
-            <PanelLeft className="w-3.5 h-3.5" />
-          </button>
-        )}
-
-        {/* Undo / Redo */}
-        {filename && (
-          <div className="flex items-center space-x-0.5 pl-0.5">
-            <button
-              type="button"
-              onClick={onUndo}
-              disabled={!canUndo}
-              title="Undo (Ctrl+Z)"
-              className="p-1.5 rounded text-neutral-300 hover:text-white hover:bg-[#282a32] disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
-            >
-              <Undo2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={onRedo}
-              disabled={!canRedo}
-              title="Redo (Ctrl+Y)"
-              className="p-1.5 rounded text-neutral-300 hover:text-white hover:bg-[#282a32] disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
-            >
-              <Redo2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* ── CENTER: Document Name, Direct Page Tools (Select / Text / Image / Draw / Crop), Organizer & Menus ── */}
-      <div
-        data-tauri-drag-region
-        onDoubleClick={(e) => {
-          if (e.target === e.currentTarget) {
-            handleToggleMaximize();
-          }
-        }}
-        className="flex items-center justify-center space-x-1.5 flex-1 min-w-0 px-1"
-      >
-        {filename ? (
-          <div className="flex items-center space-x-1.5 max-w-full overflow-x-auto no-scrollbar">
-            {/* Active Document Name */}
-            <div
-              data-tauri-drag-region
-              className="hidden xl:flex items-center space-x-1.5 text-neutral-300 text-[11px] max-w-[180px] truncate pr-1"
-            >
-              <FileText className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-              <span className="truncate font-medium text-neutral-200" title={filename}>
+          {filename && (
+            <div className="hidden sm:flex items-center gap-1.5 text-zinc-400 pl-1 border-l border-zinc-700/60 min-w-0">
+              <span className="truncate max-w-[160px] md:max-w-[220px] lg:max-w-[320px] text-[11px] text-zinc-300">
                 {filename}
               </span>
-              <span className="text-neutral-500 font-mono tabular-nums shrink-0">
-                ({currentPage}/{pageCount})
-              </span>
               {hasModifications && (
-                <span className="text-amber-400 font-bold" title="Unsaved modifications">
-                  *
+                <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                  Unsaved
                 </span>
               )}
             </div>
+          )}
+        </div>
 
-            {/* Primary Mode Switcher: [ Edit ] | [ Annotate ] */}
-            {onChangePrimaryMode && (
-              <div className="pointer-events-auto flex items-center bg-[#202127] p-0.5 rounded-lg border border-[#30323c] shrink-0">
+        {/* Center: Microsoft Office Style Search Box */}
+        <div className="flex-1 max-w-xs md:max-w-sm lg:max-w-md mx-2">
+          <form onSubmit={handleSearchSubmit} className="relative w-full">
+            <div className="relative flex items-center h-6 md:h-7 rounded-[4px] bg-[#22232a] hover:bg-[#272832] focus-within:bg-[#2c2d38] border border-[#30323e] focus-within:border-blue-500 transition-colors group">
+              <Search className="w-3.5 h-3.5 text-zinc-400 ml-2.5 mr-1.5 shrink-0 group-focus-within:text-blue-400" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder={isMd ? "Search or find in document... (Ctrl+F)" : "Search in PDF..."}
+                value={searchQuery}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                onFocus={() => {
+                  if (!isFindReplaceOpen && searchQuery.trim()) {
+                    onToggleFindReplace?.();
+                  }
+                }}
+                className="w-full bg-transparent text-[11px] text-zinc-200 placeholder-zinc-500 outline-hidden pr-6"
+              />
+              {searchQuery ? (
                 <button
                   type="button"
-                  onClick={() => onChangePrimaryMode('edit')}
-                  className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
-                    primaryMode === 'edit'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-neutral-400 hover:text-neutral-200'
-                  }`}
+                  onClick={() => handleSearchChange('')}
+                  className="absolute right-1.5 p-0.5 text-zinc-400 hover:text-zinc-200 rounded-sm hover:bg-zinc-700/50"
+                  title="Clear search"
                 >
-                  <MousePointer className="w-3 h-3" />
-                  <span>Editor</span>
+                  <X className="w-3 h-3" />
+                </button>
+              ) : (
+                <kbd className="hidden lg:inline-flex items-center mr-2 px-1.5 py-0.2 rounded text-[9px] font-mono text-zinc-500 bg-zinc-800/80 border border-zinc-700/60">
+                  Ctrl+F
+                </kbd>
+              )}
+            </div>
+          </form>
+        </div>
+
+        {/* Right: Native Window Controls (Minimize, Maximize/Restore, Close) */}
+        <div className="flex items-center h-full -mr-2 shrink-0">
+          <button
+            onClick={handleMinimize}
+            className="w-10 h-full flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-[#2b2c35] transition-colors"
+            title="Minimize"
+            aria-label="Minimize"
+          >
+            <Minus className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={handleToggleMaximize}
+            className="w-10 h-full flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-[#2b2c35] transition-colors"
+            title={effectiveMaximized ? 'Restore' : 'Maximize'}
+            aria-label={effectiveMaximized ? 'Restore' : 'Maximize'}
+          >
+            {effectiveMaximized ? (
+              <Copy className="w-3.5 h-3.5 rotate-180" />
+            ) : (
+              <Square className="w-3.5 h-3.5" />
+            )}
+          </button>
+          <button
+            onClick={handleClose}
+            className="w-11 h-full flex items-center justify-center text-zinc-400 hover:text-white hover:bg-[#e81123] transition-colors"
+            title="Close"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* ================================================================= */}
+      {/* 2. RIBBON TABS BAR (File, Home, Edit, Organize, View)              */}
+      {/* ================================================================= */}
+      <div className="h-8 px-2 flex items-center justify-between bg-[#1c1d22] border-b border-[#2b2c35]">
+        <nav className="flex items-center gap-1 h-full" aria-label="Ribbon Tabs">
+          {/* File Tab (Special Office Accent) */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('file')}
+            className={`px-3 py-1 text-xs font-semibold rounded-t-[4px] transition-colors ${
+              activeTab === 'file'
+                ? 'bg-red-600 text-white shadow-xs'
+                : 'bg-red-700/80 hover:bg-red-600 text-white/90'
+            }`}
+          >
+            File
+          </button>
+
+          {/* Standard Ribbon Tabs */}
+          {(['home', 'edit', 'organize', 'view'] as const).map((tab) => {
+            const isActive = activeTab === tab;
+            const labels: Record<string, string> = {
+              home: 'Home',
+              edit: 'Edit',
+              organize: 'Organize',
+              view: 'View',
+            };
+            return (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setActiveTab(tab)}
+                className={`relative px-3.5 py-1 text-xs font-medium rounded-t-[4px] transition-colors ${
+                  isActive
+                    ? 'bg-[#22232a] text-zinc-100 font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
+                }`}
+              >
+                {labels[tab]}
+                {isActive && (
+                  <span className="absolute bottom-0 left-2 right-2 h-[2px] bg-red-500 rounded-full" />
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Right Info Indicators */}
+        <div className="hidden sm:flex items-center gap-3 text-[11px] text-zinc-400 pr-1">
+          {pageCount > 0 && (
+            <span>
+              Page {currentPage} of {pageCount}
+            </span>
+          )}
+          {isProtected && (
+            <span className="flex items-center gap-1 text-emerald-400">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              Protected
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ================================================================= */}
+      {/* 3. RIBBON BODY (Tool Band with Groups & Large Icons)              */}
+      {/* ================================================================= */}
+      <div
+        ref={ribbonRef}
+        className="h-[84px] sm:h-[88px] px-2 py-1 bg-[#22232a] flex items-stretch overflow-hidden relative shadow-inner"
+      >
+        {/* ===================== TAB 1: FILE ===================== */}
+        {activeTab === 'file' && (
+          <div className="flex items-stretch gap-1 w-full overflow-hidden">
+            {/* Group: Open & Save */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="h-[62px] min-w-[54px] max-w-[66px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 transition-colors text-zinc-200 hover:text-white"
+                  title="Open PDF Document"
+                >
+                  <FileUp className="w-5 h-5 text-red-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Open</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => onChangePrimaryMode('annotate')}
-                  className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
-                    primaryMode === 'annotate'
-                      ? 'bg-amber-600 text-white shadow-xs'
-                      : 'text-neutral-400 hover:text-neutral-200'
-                  }`}
+                  onClick={onSave}
+                  disabled={!filename || isProcessing}
+                  className="h-[62px] min-w-[54px] max-w-[66px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-zinc-200 hover:text-white"
+                  title="Save changes to document"
                 >
-                  <Pencil className="w-3 h-3" />
-                  <span>Markup</span>
+                  <Save className="w-5 h-5 text-blue-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Save</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onSaveAs}
+                  disabled={!filename || isProcessing}
+                  className="h-[62px] min-w-[54px] max-w-[66px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-zinc-200 hover:text-white"
+                  title="Save As new file"
+                >
+                  <FolderDown className="w-5 h-5 text-amber-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Save As</span>
                 </button>
               </div>
-            )}
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                File Actions
+              </span>
+            </div>
 
-            {/* ── DIRECT PAGE EDITOR TOOLS: Select | Text | Image | Freehand Draw | Crop ── */}
-            {primaryMode === 'edit' && onToolChange && (
-              <div className="pointer-events-auto flex items-center bg-[#202127] p-0.5 rounded-lg border border-[#30323c] space-x-0.5 shrink-0">
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+
+            {/* Group: Security & Setup */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => onToolChange('select')}
-                  title="Select, Move & Resize Objects (V)"
-                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
-                    activeTool === 'select'
-                      ? 'bg-[#323544] text-white shadow-xs'
-                      : 'text-neutral-400 hover:text-neutral-200'
-                  }`}
+                  onClick={onOpenProtection}
+                  disabled={!filename}
+                  className="h-[62px] min-w-[56px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-zinc-200 hover:text-white"
+                  title="Set document password and permissions"
                 >
-                  <MousePointer className="w-3 h-3" />
-                  <span className="hidden sm:inline">Select</span>
+                  <ShieldCheck className="w-5 h-5 text-emerald-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Protect</span>
                 </button>
-
                 <button
                   type="button"
-                  onClick={() => onToolChange('text')}
-                  title="Text Tool: Click anywhere on the PDF page to add selectable, movable, resizable text (T)"
-                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
-                    activeTool === 'text'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-neutral-400 hover:text-neutral-200'
-                  }`}
+                  onClick={onOpenShortcuts}
+                  className="h-[62px] min-w-[56px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 transition-colors text-zinc-200 hover:text-white"
+                  title="View keyboard shortcuts"
                 >
-                  <Type className="w-3 h-3" />
-                  <span className="hidden sm:inline">Text</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onToolChange('image')}
-                  title="Image Tool: Click or drag on the PDF page to insert a selectable, movable, resizable image (I)"
-                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
-                    activeTool === 'image'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-neutral-400 hover:text-neutral-200'
-                  }`}
-                >
-                  <ImageIcon className="w-3 h-3" />
-                  <span className="hidden sm:inline">Image</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onToolChange('draw')}
-                  title="Freehand Draw Tool: Draw directly on the PDF page to create a selectable, movable, resizable drawing object (D)"
-                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
-                    activeTool === 'draw'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-neutral-400 hover:text-neutral-200'
-                  }`}
-                >
-                  <PenTool className="w-3 h-3" />
-                  <span className="hidden sm:inline">Draw</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onToolChange('crop')}
-                  title="Crop Area Tool: Drag a marquee over any region to crop or copy (C)"
-                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
-                    activeTool === 'crop'
-                      ? 'bg-[#323544] text-white shadow-xs'
-                      : 'text-neutral-400 hover:text-neutral-200'
-                  }`}
-                >
-                  <Crop className="w-3 h-3" />
-                  <span className="hidden md:inline">Crop</span>
+                  <Keyboard className="w-5 h-5 text-purple-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Shortcuts</span>
                 </button>
               </div>
-            )}
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Security
+              </span>
+            </div>
 
-            {/* Contextual Inline Settings for Text Tool */}
-            {primaryMode === 'edit' && activeTool === 'text' && (
-              <div className="pointer-events-auto flex items-center space-x-1.5 bg-[#1d2028] border border-blue-500/35 px-2 py-0.5 rounded-lg shrink-0">
-                <select
-                  aria-label="New text font size"
-                  value={textToolFontSize}
-                  onChange={(e) => onChangeTextToolFontSize?.(Number(e.target.value))}
-                  className="bg-[#14161b] text-white text-[11px] font-mono px-1.5 py-0.5 rounded border border-[#323544] outline-none cursor-pointer"
-                >
-                  {[10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48].map((sz) => (
-                    <option key={sz} value={sz}>
-                      {sz}pt
-                    </option>
-                  ))}
-                </select>
-                <label
-                  title="Text Color"
-                  className="w-4 h-4 rounded border border-neutral-500 cursor-pointer shrink-0 overflow-hidden"
-                  style={{ backgroundColor: textToolColor }}
-                >
-                  <input
-                    type="color"
-                    value={textToolColor}
-                    onChange={(e) => onChangeTextToolColor?.(e.target.value)}
-                    className="opacity-0 w-0 h-0"
-                  />
-                </label>
-              </div>
-            )}
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
 
-            {/* Contextual Inline Settings for Image Tool */}
-            {primaryMode === 'edit' && activeTool === 'image' && (
-              <div className="pointer-events-auto flex items-center space-x-1.5 bg-[#1d2028] border border-blue-500/35 px-2 py-0.5 rounded-lg shrink-0">
-                <button
-                  type="button"
-                  onClick={onTriggerUploadImageTool}
-                  className="flex items-center space-x-1 text-[11px] font-medium text-blue-300 hover:text-white cursor-pointer whitespace-nowrap"
-                >
-                  <FileUp className="w-3 h-3" />
-                  <span>Choose Image...</span>
-                </button>
-              </div>
-            )}
-
-            {/* Contextual Inline Settings for Freehand Draw Tool */}
-            {primaryMode === 'edit' && activeTool === 'draw' && (
-              <div className="pointer-events-auto flex items-center space-x-1.5 bg-[#1d2028] border border-blue-500/35 px-2 py-0.5 rounded-lg shrink-0">
-                <div className="flex items-center space-x-1">
-                  {DRAW_COLORS.map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => onChangeDrawColor?.(c)}
-                      title={`Stroke color ${c}`}
-                      className={`w-3.5 h-3.5 rounded-full border transition cursor-pointer ${
-                        drawColor.toLowerCase() === c.toLowerCase()
-                          ? 'border-white scale-115 ring-1 ring-blue-400'
-                          : 'border-neutral-600 opacity-80 hover:opacity-100'
-                      }`}
-                      style={{ backgroundColor: c }}
-                    />
-                  ))}
-                  <label
-                    title="Custom Stroke Color"
-                    className="w-4 h-4 rounded border border-neutral-500 cursor-pointer shrink-0 overflow-hidden ml-0.5"
-                    style={{ backgroundColor: drawColor }}
-                  >
-                    <input
-                      type="color"
-                      value={drawColor}
-                      onChange={(e) => onChangeDrawColor?.(e.target.value)}
-                      className="opacity-0 w-0 h-0"
-                    />
-                  </label>
+            {/* Group: Document Details */}
+            <div className="flex flex-col justify-between min-w-0 pr-2">
+              <div className="flex items-center gap-2 h-[62px] bg-[#1a1b20] border border-[#2b2c35] rounded-[4px] px-3">
+                <FileText className="w-6 h-6 text-zinc-400 shrink-0" />
+                <div className="flex flex-col min-w-0">
+                  <span className="text-xs font-medium text-zinc-200 truncate max-w-[200px] md:max-w-[300px]">
+                    {filename || 'No document loaded'}
+                  </span>
+                  <div className="flex items-center gap-2 text-[10px] text-zinc-400 mt-0.5">
+                    <span>{pageCount} page{pageCount !== 1 ? 's' : ''}</span>
+                    <span>·</span>
+                    <span className={hasModifications ? 'text-amber-400 font-medium' : 'text-emerald-400 font-medium'}>
+                      {hasModifications ? 'Modified' : 'Saved'}
+                    </span>
+                  </div>
                 </div>
-                <select
-                  aria-label="Freehand stroke width"
-                  value={drawStrokeWidth}
-                  onChange={(e) => onChangeDrawStrokeWidth?.(Number(e.target.value))}
-                  className="bg-[#14161b] text-white text-[11px] font-mono px-1.5 py-0.5 rounded border border-[#323544] outline-none cursor-pointer"
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Properties
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* ===================== TAB 2: HOME ===================== */}
+        {activeTab === 'home' && (
+          <div className="flex items-stretch gap-1 w-full overflow-hidden">
+            {/* Group: File (Always visible) */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="h-[62px] min-w-[50px] sm:min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 transition-colors text-zinc-200 hover:text-white"
+                  title="Open PDF File"
                 >
-                  {[1, 2, 3, 4, 6, 8, 12].map((w) => (
-                    <option key={w} value={w}>
-                      {w}pt
-                    </option>
-                  ))}
-                </select>
+                  <FileUp className="w-5 h-5 text-red-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Open</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onSave}
+                  disabled={!filename || isProcessing}
+                  className="h-[62px] min-w-[50px] sm:min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-zinc-200 hover:text-white"
+                  title="Save (Ctrl+S)"
+                >
+                  <Save className="w-5 h-5 text-blue-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Save</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onSaveAs}
+                  disabled={!filename || isProcessing}
+                  className="h-[62px] min-w-[50px] sm:min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-zinc-200 hover:text-white"
+                  title="Save As..."
+                >
+                  <FolderDown className="w-5 h-5 text-amber-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Save As</span>
+                </button>
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                File
+              </span>
+            </div>
+
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+
+            {/* Group: History (Undo / Redo - Always visible) */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex flex-col justify-center gap-1 h-[62px] px-1">
+                <button
+                  type="button"
+                  onClick={onUndo}
+                  disabled={!canUndo}
+                  className="h-7 px-2 flex items-center gap-1.5 rounded-[4px] hover:bg-zinc-700/60 disabled:opacity-35 disabled:cursor-not-allowed text-xs text-zinc-200 transition-colors"
+                  title="Undo (Ctrl+Z)"
+                >
+                  <Undo2 className="w-4 h-4 text-zinc-300" />
+                  <span className="text-[11px]">Undo</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onRedo}
+                  disabled={!canRedo}
+                  className="h-7 px-2 flex items-center gap-1.5 rounded-[4px] hover:bg-zinc-700/60 disabled:opacity-35 disabled:cursor-not-allowed text-xs text-zinc-200 transition-colors"
+                  title="Redo (Ctrl+Y)"
+                >
+                  <Redo2 className="w-4 h-4 text-zinc-300" />
+                  <span className="text-[11px]">Redo</span>
+                </button>
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                History
+              </span>
+            </div>
+
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+
+            {/* Group: Core Tools */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => onToolChange?.('select')}
+                  className={`h-[62px] min-w-[50px] sm:min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    activeTool === 'select'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Select Tool (V)"
+                >
+                  <MousePointer className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Select</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToolChange?.('text')}
+                  className={`h-[62px] min-w-[50px] sm:min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    activeTool === 'text'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Text Tool (T) - Click on PDF to add text"
+                >
+                  <Type className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Text</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onToolChange?.('image');
+                    onTriggerUploadImageTool?.();
+                  }}
+                  className={`h-[62px] min-w-[50px] sm:min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    activeTool === 'image'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Image Tool (I) - Insert images onto PDF"
+                >
+                  <ImageIcon className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Image</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToolChange?.('draw')}
+                  className={`h-[62px] min-w-[50px] sm:min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    activeTool === 'draw'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Freehand Draw Tool (D)"
+                >
+                  <PenTool className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Draw</span>
+                </button>
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Tools
+              </span>
+            </div>
+
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+
+            {/* Group: Search & Document (adapts based on width) */}
+            {isMd && (
+              <div className="flex flex-col justify-between shrink-0">
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={onToggleFindReplace}
+                    className={`h-[62px] min-w-[54px] px-2 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                      isFindReplaceOpen
+                        ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                        : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                    }`}
+                    title="Find & Replace in Document (Ctrl+F)"
+                  >
+                    <Search className="w-5 h-5 text-sky-400 mb-1" />
+                    <span className="text-[11px] font-medium leading-tight">Find</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onOpenOcrModal}
+                    className="relative h-[62px] min-w-[54px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 transition-colors text-zinc-300 hover:text-white"
+                    title="OCR Scanned PDF Text"
+                  >
+                    <ScanText className="w-5 h-5 text-emerald-400 mb-1" />
+                    <span className="text-[11px] font-medium leading-tight">OCR Text</span>
+                    {scannedPageCount > 0 && (
+                      <span className="absolute top-1 right-1 px-1 py-0.2 bg-emerald-500 text-[9px] font-bold text-zinc-950 rounded-full">
+                        {scannedPageCount}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onOpenProtection}
+                    disabled={!filename}
+                    className={`h-[62px] min-w-[54px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 disabled:opacity-40 transition-colors ${
+                      isProtected ? 'text-emerald-400' : 'text-zinc-300 hover:text-white'
+                    }`}
+                    title="PDF Encryption & Permissions"
+                  >
+                    <Shield className="w-5 h-5 text-indigo-400 mb-1" />
+                    <span className="text-[11px] font-medium leading-tight">Protect</span>
+                  </button>
+                </div>
+                <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                  Document
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ===================== TAB 3: EDIT ===================== */}
+        {activeTab === 'edit' && (
+          <div className="flex items-stretch gap-1 w-full overflow-hidden">
+            {/* Group: Direct Editor Tools */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => onToolChange?.('select')}
+                  className={`h-[62px] min-w-[48px] sm:min-w-[52px] px-1 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    activeTool === 'select'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Select Tool (V)"
+                >
+                  <MousePointer className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Select</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToolChange?.('crop')}
+                  className={`h-[62px] min-w-[48px] sm:min-w-[52px] px-1 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    activeTool === 'crop'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Crop Area Tool (C)"
+                >
+                  <Crop className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Crop</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToolChange?.('text')}
+                  className={`h-[62px] min-w-[48px] sm:min-w-[52px] px-1 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    activeTool === 'text'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Text Tool (T)"
+                >
+                  <Type className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Text</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onToolChange?.('image');
+                    onTriggerUploadImageTool?.();
+                  }}
+                  className={`h-[62px] min-w-[48px] sm:min-w-[52px] px-1 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    activeTool === 'image'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Insert Image (I)"
+                >
+                  <ImageIcon className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Image</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToolChange?.('draw')}
+                  className={`h-[62px] min-w-[48px] sm:min-w-[52px] px-1 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    activeTool === 'draw'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Draw Tool (D)"
+                >
+                  <PenTool className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Draw</span>
+                </button>
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Tools
+              </span>
+            </div>
+
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+
+            {/* Group: Tool Options (Contextual inline settings) */}
+            <div className="flex flex-col justify-between shrink-0 min-w-0">
+              <div className="flex items-center h-[62px] px-2 bg-[#1a1b20] border border-[#2b2c35] rounded-[4px]">
+                {activeTool === 'draw' && (
+                  <div className="flex items-center gap-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[9px] text-zinc-400 uppercase tracking-wider">Color</span>
+                      <div className="flex items-center gap-1">
+                        {DRAW_COLORS.map((c) => (
+                          <button
+                            key={c}
+                            type="button"
+                            onClick={() => onChangeDrawColor?.(c)}
+                            style={{ backgroundColor: c }}
+                            className={`w-4 h-4 rounded-full transition-transform ${
+                              drawColor === c ? 'scale-125 ring-2 ring-white' : 'opacity-80 hover:opacity-100'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="h-7 w-[1px] bg-zinc-700" />
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[9px] text-zinc-400 uppercase tracking-wider">Width</span>
+                      <div className="flex items-center gap-1">
+                        {[1, 2, 3, 5, 8].map((w) => (
+                          <button
+                            key={w}
+                            type="button"
+                            onClick={() => onChangeDrawStrokeWidth?.(w)}
+                            className={`w-5 h-5 rounded-[3px] text-[10px] font-medium transition-colors ${
+                              drawStrokeWidth === w
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                            }`}
+                          >
+                            {w}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeTool === 'text' && (
+                  <div className="flex items-center gap-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[9px] text-zinc-400 uppercase tracking-wider">Font Size</span>
+                      <select
+                        value={textToolFontSize}
+                        onChange={(e) => onChangeTextToolFontSize?.(Number(e.target.value))}
+                        className="h-6 px-1.5 rounded-[3px] bg-zinc-800 border border-zinc-700 text-xs text-zinc-200 outline-hidden"
+                      >
+                        {[10, 12, 14, 16, 20, 24, 32].map((s) => (
+                          <option key={s} value={s}>{s} px</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="h-7 w-[1px] bg-zinc-700" />
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[9px] text-zinc-400 uppercase tracking-wider">Color</span>
+                      <div className="flex items-center gap-1">
+                        {DRAW_COLORS.map((c) => (
+                          <button
+                            key={c}
+                            type="button"
+                            onClick={() => onChangeTextToolColor?.(c)}
+                            style={{ backgroundColor: c }}
+                            className={`w-4 h-4 rounded-full transition-transform ${
+                              textToolColor === c ? 'scale-125 ring-2 ring-white' : 'opacity-80 hover:opacity-100'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeTool === 'image' && (
+                  <button
+                    type="button"
+                    onClick={onTriggerUploadImageTool}
+                    className="h-7 px-3 rounded-[3px] bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium flex items-center gap-1.5 transition-colors shadow-xs"
+                  >
+                    <FileUp className="w-3.5 h-3.5" />
+                    Upload Image
+                  </button>
+                )}
+
+                {(activeTool === 'select' || activeTool === 'crop') && (
+                  <span className="text-[11px] text-zinc-400 px-1">
+                    {activeTool === 'select'
+                      ? 'Click any text/image to move or resize'
+                      : 'Drag a box on the PDF to crop an object'}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Tool Properties
+              </span>
+            </div>
+
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+
+            {/* Group: Match & Objects */}
+            {isMd && (
+              <div className="flex flex-col justify-between shrink-0">
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={onFindSameObject}
+                    disabled={!hasSelectedObject}
+                    className="h-[62px] min-w-[52px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-zinc-300 hover:text-white"
+                    title="Find identical objects across all pages"
+                  >
+                    <Sparkles className="w-5 h-5 text-amber-400 mb-1" />
+                    <span className="text-[11px] font-medium leading-tight">Find Same</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onReplaceSameObject}
+                    disabled={!hasSelectedObject}
+                    className="h-[62px] min-w-[52px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-zinc-300 hover:text-white"
+                    title="Replace matching objects everywhere"
+                  >
+                    <Replace className="w-5 h-5 text-blue-400 mb-1" />
+                    <span className="text-[11px] font-medium leading-tight">Replace</span>
+                  </button>
+                </div>
+                <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                  Matching
+                </span>
               </div>
             )}
 
-            {/* Page Organizer Launcher */}
-            {onOpenPageOrganizer && (
+            {isLg && (
+              <>
+                <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+                {/* Group: Page Enhancements */}
+                <div className="flex flex-col justify-between shrink-0">
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={onOpenWatermarkModal}
+                      disabled={!filename}
+                      className="h-[62px] min-w-[52px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 disabled:opacity-40 transition-colors text-zinc-300 hover:text-white"
+                      title="Add Watermark to pages"
+                    >
+                      <Stamp className="w-5 h-5 text-teal-400 mb-1" />
+                      <span className="text-[11px] font-medium leading-tight">Watermark</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onOpenPageNumberModal}
+                      disabled={!filename}
+                      className="h-[62px] min-w-[52px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 disabled:opacity-40 transition-colors text-zinc-300 hover:text-white"
+                      title="Add Page Numbers"
+                    >
+                      <Hash className="w-5 h-5 text-indigo-400 mb-1" />
+                      <span className="text-[11px] font-medium leading-tight">Numbers</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onOpenHeaderFooterModal}
+                      disabled={!filename}
+                      className="h-[62px] min-w-[52px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 disabled:opacity-40 transition-colors text-zinc-300 hover:text-white"
+                      title="Add Header & Footer"
+                    >
+                      <FileText className="w-5 h-5 text-sky-400 mb-1" />
+                      <span className="text-[11px] font-medium leading-tight">Header</span>
+                    </button>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                    Layout
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ===================== TAB 4: ORGANIZE ===================== */}
+        {activeTab === 'organize' && (
+          <div className="flex items-stretch gap-1 w-full overflow-hidden">
+            {/* Group: Page Manager */}
+            <div className="flex flex-col justify-between shrink-0">
               <button
                 type="button"
                 onClick={onOpenPageOrganizer}
-                title="Open Page Organizer"
-                className="pointer-events-auto flex items-center space-x-1 px-2 py-1 bg-[#202127] hover:bg-[#2a2c36] text-neutral-300 hover:text-white border border-[#30323c] rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap shrink-0"
+                disabled={!filename}
+                className="h-[62px] min-w-[64px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 transition-colors text-zinc-200 hover:text-white"
+                title="Open Visual Page Organizer & Grid"
               >
-                <LayoutGrid className="w-3 h-3 text-blue-400" />
-                <span className="hidden lg:inline">Organizer</span>
+                <LayoutGrid className="w-5 h-5 text-purple-400 mb-1" />
+                <span className="text-[11px] font-medium leading-tight">Organizer</span>
               </button>
-            )}
-
-            {/* Page Actions Dropdown */}
-            <div className="relative pointer-events-auto shrink-0" ref={pageMenuRef}>
-              <button
-                type="button"
-                onClick={() => setIsPageMenuOpen((p) => !p)}
-                title="Page Operations"
-                className="flex items-center space-x-1 px-2 py-1 bg-[#202127] hover:bg-[#2a2c36] text-neutral-300 hover:text-white border border-[#30323c] rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap"
-              >
-                <span>Page</span>
-                <ChevronDown className="w-2.5 h-2.5 text-neutral-400" />
-              </button>
-
-              {isPageMenuOpen && (
-                <div className="absolute top-full mt-1 left-0 w-44 bg-[#1f2025] border border-[#353742] rounded-lg shadow-xl py-1 z-50 text-[11.5px]">
-                  {onRotatePageRight && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onRotatePageRight();
-                        setIsPageMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <RotateCw className="w-3.5 h-3.5 text-blue-400" />
-                      <span>Rotate Page CW (90°)</span>
-                    </button>
-                  )}
-                  {onRotatePageLeft && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onRotatePageLeft();
-                        setIsPageMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5 text-blue-400" />
-                      <span>Rotate Page CCW (90°)</span>
-                    </button>
-                  )}
-                  {onDuplicatePage && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onDuplicatePage();
-                        setIsPageMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <CopyPlus className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Duplicate Page</span>
-                    </button>
-                  )}
-                  {onOpenAddBlankPage && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenAddBlankPage();
-                        setIsPageMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <FilePlus2 className="w-3.5 h-3.5 text-blue-400" />
-                      <span>Insert Blank Page</span>
-                    </button>
-                  )}
-                  {onOpenDeletePage && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenDeletePage();
-                        setIsPageMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-rose-300 hover:bg-rose-500/15 transition cursor-pointer border-t border-[#30323a] mt-1 pt-1.5"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                      <span>Delete Current Page</span>
-                    </button>
-                  )}
-                </div>
-              )}
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Overview
+              </span>
             </div>
 
-            {/* Document Tools Menu */}
-            <div className="relative pointer-events-auto shrink-0" ref={toolsMenuRef}>
-              <button
-                type="button"
-                onClick={() => setIsToolsMenuOpen((p) => !p)}
-                title="Document Tools"
-                className="flex items-center space-x-1 px-2 py-1 bg-[#202127] hover:bg-[#2a2c36] text-neutral-300 hover:text-white border border-[#30323c] rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap"
-              >
-                <Wrench className="w-3 h-3 text-blue-400" />
-                <span className="hidden lg:inline">Tools</span>
-                <ChevronDown className="w-2.5 h-2.5 text-neutral-400" />
-              </button>
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
 
-              {isToolsMenuOpen && (
-                <div className="absolute top-full mt-1 left-0 w-48 bg-[#1f2025] border border-[#353742] rounded-lg shadow-xl py-1 z-50 text-[11.5px]">
-                  {onOpenOcrModal && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenOcrModal();
-                        setIsToolsMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <ScanText className="w-3.5 h-3.5 text-blue-400" />
-                      <span>OCR Scanned Text</span>
-                      {scannedPageCount > 0 && (
-                        <span className="ml-auto text-[10px] text-blue-300 font-mono">
-                          {scannedPageCount}p
-                        </span>
-                      )}
-                    </button>
-                  )}
-                  {onToggleFindReplace && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onToggleFindReplace();
-                        setIsToolsMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <Search className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Find & Replace (Ctrl+F)</span>
-                    </button>
-                  )}
-                  {onOpenWatermarkModal && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenWatermarkModal();
-                        setIsToolsMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <Stamp className="w-3.5 h-3.5 text-blue-400" />
-                      <span>Watermark</span>
-                    </button>
-                  )}
-                  {onOpenPageNumberModal && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenPageNumberModal();
-                        setIsToolsMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <Hash className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Page Numbers</span>
-                    </button>
-                  )}
-                  {onOpenHeaderFooterModal && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenHeaderFooterModal();
-                        setIsToolsMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-purple-400" />
-                      <span>Header & Footer</span>
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Same Object Multi-Page Batch Action */}
-            {hasSelectedObject && onFindSameObject && (
-              <div className="relative pointer-events-auto shrink-0" ref={sameObjectMenuRef}>
+            {/* Group: Page Rotation */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-0.5">
                 <button
                   type="button"
-                  onClick={() => setIsSameObjectMenuOpen((p) => !p)}
-                  className="flex items-center space-x-1 px-2 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap"
+                  onClick={onRotatePageLeft}
+                  disabled={!filename}
+                  className="h-[62px] min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 transition-colors text-zinc-300 hover:text-white"
+                  title="Rotate Current Page Left (90° CCW)"
                 >
-                  <Sparkles className="w-3 h-3 text-amber-400" />
-                  <span className="hidden xl:inline">Same Object</span>
-                  {matchCount > 0 && (
-                    <span className="text-amber-200 px-1 text-[10px] font-mono tabular-nums">
-                      {matchCount}
-                    </span>
-                  )}
-                  <ChevronDown className="w-2.5 h-2.5 text-amber-400" />
+                  <RotateCcw className="w-5 h-5 text-blue-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Rotate L</span>
                 </button>
-
-                {isSameObjectMenuOpen && (
-                  <div className="absolute top-full mt-1 left-0 w-52 bg-[#1f2025] border border-[#353742] rounded-lg shadow-xl py-1 z-50 text-[11.5px]">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onFindSameObject();
-                        setIsSameObjectMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                    >
-                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Find Across Document</span>
-                    </button>
-                    {onHighlightSameObjectMatches && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onHighlightSameObjectMatches();
-                          setIsSameObjectMenuOpen(false);
-                        }}
-                        className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                      >
-                        <Search className="w-3.5 h-3.5 text-blue-400" />
-                        <span>Highlight All Instances</span>
-                      </button>
-                    )}
-                    {onReplaceSameObject && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onReplaceSameObject();
-                          setIsSameObjectMenuOpen(false);
-                        }}
-                        className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
-                      >
-                        <Crop className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Replace Across All Pages</span>
-                      </button>
-                    )}
-                  </div>
-                )}
+                <button
+                  type="button"
+                  onClick={onRotatePageRight}
+                  disabled={!filename}
+                  className="h-[62px] min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 transition-colors text-zinc-300 hover:text-white"
+                  title="Rotate Current Page Right (90° CW)"
+                >
+                  <RotateCw className="w-5 h-5 text-blue-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Rotate R</span>
+                </button>
               </div>
-            )}
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Rotate
+              </span>
+            </div>
 
-            {/* PDF Protection */}
-            {onOpenProtection && (
-              <button
-                type="button"
-                onClick={onOpenProtection}
-                title={isProtected ? 'PDF is encrypted with password protection' : 'Protect PDF with passwords'}
-                className={`pointer-events-auto flex items-center space-x-1 px-2 py-1 rounded text-[11px] border transition cursor-pointer whitespace-nowrap shrink-0 ${
-                  isProtected
-                    ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25'
-                    : 'bg-[#202127] border-[#30323c] text-neutral-300 hover:text-white hover:bg-[#2a2c36]'
-                }`}
-              >
-                {isProtected ? (
-                  <>
-                    <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                    <span className="font-medium hidden xl:inline">Secured</span>
-                  </>
-                ) : (
-                  <>
-                    <Shield className="w-3 h-3 text-neutral-400" />
-                    <span className="hidden xl:inline">Protect</span>
-                  </>
-                )}
-              </button>
-            )}
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
 
-            {/* Zoom Controls */}
-            {onZoomChange && (
-              <div className="pointer-events-auto hidden md:flex items-center space-x-0.5 bg-[#202127] px-1 py-0.5 rounded border border-[#30323c] shrink-0">
+            {/* Group: Page Actions */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-0.5">
                 <button
                   type="button"
-                  onClick={() => onZoomChange(Math.max(0.25, zoom - 0.1))}
-                  title="Zoom Out"
-                  className="p-1 text-neutral-400 hover:text-white transition cursor-pointer"
+                  onClick={onOpenAddBlankPage}
+                  disabled={!filename}
+                  className="h-[62px] min-w-[56px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 transition-colors text-zinc-300 hover:text-white"
+                  title="Insert a new Blank Page"
                 >
-                  <ZoomOut className="w-3 h-3" />
+                  <FilePlus2 className="w-5 h-5 text-emerald-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Blank Page</span>
                 </button>
-                <span className="px-1 text-[10.5px] font-mono tabular-nums text-neutral-300 w-10 text-center">
-                  {Math.round(zoom * 100)}%
-                </span>
                 <button
                   type="button"
-                  onClick={() => onZoomChange(Math.min(3.0, zoom + 0.1))}
-                  title="Zoom In"
-                  className="p-1 text-neutral-400 hover:text-white transition cursor-pointer"
+                  onClick={onDuplicatePage}
+                  disabled={!filename}
+                  className="h-[62px] min-w-[56px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 transition-colors text-zinc-300 hover:text-white"
+                  title="Duplicate Current Page"
                 >
-                  <ZoomIn className="w-3 h-3" />
+                  <CopyPlus className="w-5 h-5 text-sky-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Duplicate</span>
                 </button>
-                {onFitWidth && (
+                <button
+                  type="button"
+                  onClick={onOpenDeletePage}
+                  disabled={!filename || pageCount <= 1}
+                  className="h-[62px] min-w-[56px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-rose-950/40 text-rose-300 hover:text-rose-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title="Delete Page"
+                >
+                  <Trash2 className="w-5 h-5 text-rose-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Delete</span>
+                </button>
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Pages
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* ===================== TAB 5: VIEW ===================== */}
+        {activeTab === 'view' && (
+          <div className="flex items-stretch gap-1 w-full overflow-hidden">
+            {/* Group: Zoom Controls */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => onZoomChange?.(Math.max(0.3, zoom - 0.15))}
+                  className="h-[62px] min-w-[50px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 transition-colors text-zinc-300 hover:text-white"
+                  title="Zoom Out (Ctrl+-)"
+                >
+                  <ZoomOut className="w-5 h-5 text-zinc-300 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Out</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onFitPage}
+                  className="h-[62px] min-w-[50px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 transition-colors text-zinc-300 hover:text-white"
+                  title="Reset to 100% Zoom"
+                >
+                  <span className="text-sm font-bold text-blue-400 mb-1 leading-none">
+                    {Math.round(zoom * 100)}%
+                  </span>
+                  <span className="text-[11px] font-medium leading-tight">100%</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onZoomChange?.(Math.min(2.5, zoom + 0.15))}
+                  className="h-[62px] min-w-[50px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 transition-colors text-zinc-300 hover:text-white"
+                  title="Zoom In (Ctrl++)"
+                >
+                  <ZoomIn className="w-5 h-5 text-zinc-300 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">In</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onFitWidth}
+                  className="h-[62px] min-w-[56px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 transition-colors text-zinc-300 hover:text-white"
+                  title="Fit Page to Window Width"
+                >
+                  <Expand className="w-5 h-5 text-zinc-300 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Fit Width</span>
+                </button>
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Zoom
+              </span>
+            </div>
+
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+
+            {/* Group: Page View Modes */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => onViewModeChange?.('single')}
+                  className={`h-[62px] min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    viewMode === 'single'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Single Page View"
+                >
+                  <File className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">One Page</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onViewModeChange?.('continuous')}
+                  className={`h-[62px] min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    viewMode === 'continuous'
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Continuous Multi-Page View"
+                >
+                  <Files className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Multi Page</span>
+                </button>
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Display
+              </span>
+            </div>
+
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+
+            {/* Group: Workspace Panels */}
+            <div className="flex flex-col justify-between shrink-0">
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={onToggleSidebar}
+                  className={`h-[62px] min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    isSidebarOpen
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Toggle Thumbnails Sidebar"
+                >
+                  <PanelLeft className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Sidebar</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onToggleInspector}
+                  className={`h-[62px] min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] transition-colors ${
+                    isInspectorOpen
+                      ? 'bg-blue-600/25 text-blue-400 border border-blue-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Toggle Inspector & Properties Panel"
+                >
+                  <PanelRight className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Inspector</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onToggleFullscreen}
+                  className="h-[62px] min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 transition-colors text-zinc-300 hover:text-white"
+                  title="Toggle Fullscreen"
+                >
+                  <Maximize2 className="w-5 h-5 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight">Fullscreen</span>
+                </button>
+              </div>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Panels
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* ===================== OVERFLOW "MORE (⋯)" DROPDOWN ===================== */}
+        {overflowItems.length > 0 && (
+          <div ref={moreMenuRef} className="ml-auto self-center relative pl-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsMoreMenuOpen((prev) => !prev)}
+              className="h-[62px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 text-zinc-300 hover:text-white transition-colors"
+              title="More options"
+            >
+              <MoreHorizontal className="w-5 h-5 mb-1" />
+              <span className="text-[11px] font-medium leading-tight">More</span>
+            </button>
+
+            {isMoreMenuOpen && (
+              <div className="absolute right-0 top-full mt-1 w-56 rounded-md bg-[#22232a] border border-[#30323e] shadow-2xl py-1 z-50 animate-in fade-in zoom-in-95 duration-100">
+                <div className="px-3 py-1.5 text-[10px] font-semibold text-zinc-500 tracking-wider uppercase border-b border-[#30323e]">
+                  Additional Tools
+                </div>
+                {overflowItems.map((item) => (
                   <button
+                    key={item.id}
                     type="button"
-                    onClick={onFitWidth}
-                    title="Fit to Width"
-                    className="p-1 text-neutral-400 hover:text-white transition cursor-pointer border-l border-[#30323c] ml-0.5 pl-1"
+                    disabled={item.disabled}
+                    onClick={() => {
+                      item.onClick();
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-xs flex items-center justify-between transition-colors ${
+                      item.disabled
+                        ? 'opacity-40 cursor-not-allowed text-zinc-500'
+                        : item.danger
+                        ? 'text-rose-400 hover:bg-rose-950/40'
+                        : item.active
+                        ? 'bg-blue-600/20 text-blue-400'
+                        : 'text-zinc-200 hover:bg-zinc-700/50'
+                    }`}
                   >
-                    <Expand className="w-3 h-3" />
+                    <div className="flex items-center gap-2.5">
+                      {item.icon}
+                      <span>{item.label}</span>
+                    </div>
+                    {item.badge && (
+                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300">
+                        {item.badge}
+                      </span>
+                    )}
                   </button>
-                )}
+                ))}
               </div>
             )}
           </div>
-        ) : (
-          <div
-            data-tauri-drag-region
-            onDoubleClick={handleToggleMaximize}
-            className="text-neutral-500 text-[11.5px] truncate"
-          >
-            Desktop PDF Workstation — Open or drop a PDF file to begin
-          </div>
         )}
       </div>
-
-      {/* ── RIGHT: Save / Save As, Inspector Toggle & Native Desktop Window Controls ── */}
-      <div className="flex items-center space-x-1 shrink-0 pointer-events-auto">
-        {/* Save & Save As Split Control */}
-        {filename && (onSave || onExport) && (
-          <div className="relative flex items-center" ref={saveMenuRef}>
-            <button
-              type="button"
-              onClick={onSave || onExport}
-              disabled={isProcessing}
-              title={`Save (${filename}) — Ctrl+S`}
-              className="flex items-center space-x-1.5 px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-l text-[11.5px] font-semibold transition cursor-pointer disabled:opacity-50 whitespace-nowrap"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Save</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (onSaveAs) {
-                  onSaveAs();
-                } else {
-                  setIsSaveMenuOpen((p) => !p);
-                }
-              }}
-              disabled={isProcessing}
-              title="Save As... (Choose location or save as new file — Ctrl+Shift+S)"
-              className="flex items-center space-x-1 px-2 py-1 bg-[#1d4ed8] hover:bg-blue-500 text-white border-l border-blue-400/30 rounded-r text-[11.5px] font-medium transition cursor-pointer disabled:opacity-50 whitespace-nowrap"
-            >
-              <FolderDown className="w-3.5 h-3.5" />
-              <span className="hidden lg:inline">Save As...</span>
-            </button>
-          </div>
-        )}
-
-        {/* Shortcuts */}
-        {onOpenShortcuts && (
-          <button
-            type="button"
-            onClick={onOpenShortcuts}
-            title="Keyboard Shortcuts"
-            className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-[#282a32] transition cursor-pointer hidden xl:block"
-          >
-            <Keyboard className="w-3.5 h-3.5" />
-          </button>
-        )}
-
-        {/* Inspector Toggle */}
-        {filename && onToggleInspector && (
-          <button
-            type="button"
-            onClick={onToggleInspector}
-            title={isInspectorOpen ? 'Hide Inspector Panel' : 'Show Inspector Panel'}
-            className={`p-1.5 rounded border transition cursor-pointer ${
-              isInspectorOpen
-                ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
-                : 'bg-[#202127] border-[#30323c] text-neutral-400 hover:text-white hover:bg-[#282a32]'
-            }`}
-          >
-            <PanelRight className="w-3.5 h-3.5" />
-          </button>
-        )}
-
-        {/* Desktop Window Controls Divider */}
-        <div className="w-[1px] h-5 bg-[#2d2f38] mx-1" />
-
-        {/* 1. Minimize Button */}
-        <button
-          type="button"
-          onClick={handleMinimize}
-          title="Minimize Window"
-          aria-label="Minimize Window"
-          className="h-8 w-8 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-[#2b2d36] rounded transition cursor-pointer"
-        >
-          <Minus className="w-3.5 h-3.5" />
-        </button>
-
-        {/* 2. Maximize / Restore Button */}
-        <button
-          type="button"
-          onClick={handleToggleMaximize}
-          title={effectiveMaximized ? 'Restore Window Size' : 'Maximize Window'}
-          aria-label={effectiveMaximized ? 'Restore Window Size' : 'Maximize Window'}
-          className="h-8 w-8 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-[#2b2d36] rounded transition cursor-pointer"
-        >
-          {effectiveMaximized ? (
-            <Copy className="w-3.5 h-3.5 rotate-180" />
-          ) : (
-            <Square className="w-3 h-3" />
-          )}
-        </button>
-
-        {/* 3. Fullscreen Toggle Button */}
-        <button
-          type="button"
-          onClick={handleToggleFullscreen}
-          title={effectiveFullscreen ? 'Exit Fullscreen (F11)' : 'Fullscreen (F11)'}
-          aria-label={effectiveFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-          className={`h-8 w-8 flex items-center justify-center rounded transition cursor-pointer ${
-            effectiveFullscreen
-              ? 'text-blue-400 bg-blue-500/15 hover:bg-blue-500/25'
-              : 'text-neutral-400 hover:text-white hover:bg-[#2b2d36]'
-          }`}
-        >
-          {effectiveFullscreen ? (
-            <Minimize2 className="w-3.5 h-3.5" />
-          ) : (
-            <Maximize2 className="w-3.5 h-3.5" />
-          )}
-        </button>
-
-        {/* 4. Close Button */}
-        <button
-          type="button"
-          onClick={handleClose}
-          title="Close"
-          aria-label="Close"
-          className="h-8 w-8 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-rose-600 rounded transition cursor-pointer"
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
-    </div>
+    </header>
   );
 };

@@ -58,6 +58,7 @@ import { WatermarkModal } from './components/WatermarkModal';
 import { PageNumberModal, formatPageNumberString } from './components/PageNumberModal';
 import { HeaderFooterModal, resolveHeaderFooterTemplate } from './components/HeaderFooterModal';
 import { EmptyState } from './components/EmptyState';
+import { StatusBar } from './components/StatusBar';
 import { Trash2, Undo2, X, Check, AlertTriangle, Maximize2 } from 'lucide-react';
 
 const MAX_HISTORY_STEPS = 50;
@@ -179,9 +180,11 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
   );
+  const [sidebarWidth, setSidebarWidth] = useState<number>(216);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
   );
+  const [inspectorWidth, setInspectorWidth] = useState<number>(320);
   const [isAddBlankPageModalOpen, setIsAddBlankPageModalOpen] = useState<boolean>(false);
   const [deleteTargetPageIndex, setDeleteTargetPageIndex] = useState<number | null>(null);
   const [isRearrangeModalOpen, setIsRearrangeModalOpen] = useState<boolean>(false);
@@ -391,7 +394,7 @@ export default function App() {
 
       const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 1024;
       const fallbackWidth = isDesktop
-        ? window.innerWidth - (isSidebarOpen ? 208 : 0) - (isInspectorOpen ? 320 : 0)
+        ? window.innerWidth - (isSidebarOpen ? sidebarWidth : 0) - (isInspectorOpen ? inspectorWidth : 0)
         : window.innerWidth;
 
       const availWidth = containerW || viewerContainerWidth || fallbackWidth;
@@ -403,7 +406,7 @@ export default function App() {
         setZoom(clampedZoom);
       }
     },
-    [pages, activePageIndex, viewerContainerWidth, isSidebarOpen, isInspectorOpen]
+    [pages, activePageIndex, viewerContainerWidth, isSidebarOpen, sidebarWidth, isInspectorOpen, inspectorWidth]
   );
 
   const handleFitWidth = useCallback(() => {
@@ -3208,6 +3211,8 @@ export default function App() {
         isProcessing={isProcessing}
         isProtected={protectionConfig.enabled}
         isFindReplaceOpen={isFindReplaceOpen}
+        searchQuery={searchQuery}
+        onSearchQueryChange={setSearchQuery}
         scannedPageCount={scannedPageIndices.length}
         primaryMode={primaryMode}
         isSidebarOpen={isSidebarOpen}
@@ -3340,6 +3345,8 @@ export default function App() {
             matches={canvasHighlightedMatches}
             isOpen={isSidebarOpen}
             onClose={() => setIsSidebarOpen(false)}
+            width={sidebarWidth}
+            onWidthChange={setSidebarWidth}
             onSelectPage={(idx) => {
               setActivePageIndex(idx);
               setScrollToPageIndex(idx);
@@ -3465,6 +3472,8 @@ export default function App() {
             onSetTool={setActiveTool}
             isOpen={isInspectorOpen}
             onClose={() => setIsInspectorOpen(false)}
+            width={inspectorWidth}
+            onWidthChange={setInspectorWidth}
           />
         </div>
       ) : (
@@ -3473,6 +3482,38 @@ export default function App() {
           isProcessing={isProcessing}
         />
       )}
+
+      {/* Bottom Status Bar */}
+      <StatusBar
+        filename={filename}
+        currentPage={activePageIndex + 1}
+        totalPages={pages.length}
+        zoom={zoom}
+        viewMode={viewMode}
+        activeTool={activeTool}
+        primaryMode={primaryMode}
+        hasModifications={hasModifications}
+        isProtected={protectionConfig.enabled}
+        isSidebarOpen={isSidebarOpen}
+        isInspectorOpen={isInspectorOpen}
+        onSelectPage={(pageIdx) => {
+          setActivePageIndex(pageIdx);
+          setScrollToPageIndex(pageIdx);
+        }}
+        onZoomChange={(newZoom) => {
+          setIsFitWidthActive(false);
+          setZoom(Math.min(2.5, Math.max(0.3, Math.round(newZoom * 100) / 100)));
+        }}
+        onFitWidth={handleFitWidth}
+        onViewModeChange={(mode) => {
+          setViewMode(mode);
+          if (mode === 'continuous') {
+            setScrollToPageIndex(activePageIndex);
+          }
+        }}
+        onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
+        onToggleInspector={() => setIsInspectorOpen((prev) => !prev)}
+      />
 
       {/* Unified Same Object Result, Selection, Highlight, Remove & Replace Modal */}
       <SameObjectModal

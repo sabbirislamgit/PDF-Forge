@@ -20,6 +20,8 @@ import {
   AnnotationItem,
   AnnotationType,
   PDFProtectionConfig,
+  InvertColorsScope,
+  InvertQualityPreset,
 } from './types/pdf';
 import {
   extractPageObjects,
@@ -39,6 +41,11 @@ import {
   runOcrOnPages,
   OcrProgressUpdate,
 } from './utils/ocrProcessor';
+import {
+  processInvertPagesAsync,
+  InvertProgressUpdate,
+  clearInvertedPageExportCache,
+} from './utils/pdfColorInverter';
 import { TitleBar, ToolMode } from './components/TitleBar';
 import { AnnotationToolbar } from './components/AnnotationToolbar';
 import { CommentsPanel } from './components/CommentsPanel';
@@ -57,6 +64,7 @@ import { FindReplaceBar } from './components/FindReplaceBar';
 import { WatermarkModal } from './components/WatermarkModal';
 import { PageNumberModal, formatPageNumberString } from './components/PageNumberModal';
 import { HeaderFooterModal, resolveHeaderFooterTemplate } from './components/HeaderFooterModal';
+import { InvertColorsModal } from './components/InvertColorsModal';
 import { EmptyState } from './components/EmptyState';
 import { StatusBar } from './components/StatusBar';
 import { Trash2, Undo2, X, Check, AlertTriangle, Maximize2 } from 'lucide-react';
@@ -252,6 +260,12 @@ export default function App() {
   const [isPageNumberModalOpen, setIsPageNumberModalOpen] = useState<boolean>(false);
   const [isHeaderFooterModalOpen, setIsHeaderFooterModalOpen] = useState<boolean>(false);
 
+  // Invert PDF Colors Tool State
+  const [isInvertColorsModalOpen, setIsInvertColorsModalOpen] = useState<boolean>(false);
+  const [isProcessingInvert, setIsProcessingInvert] = useState<boolean>(false);
+  const [invertProgress, setInvertProgress] = useState<InvertProgressUpdate | null>(null);
+  const cancelInvertRef = useRef<boolean>(false);
+
   // Debounce search query for responsive typing across 500+ page documents
   useEffect(() => {
     const trimmed = searchQuery.trim();
@@ -300,6 +314,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       clearPdfRenderCaches();
+      clearInvertedPageExportCache();
       if (pdfDocProxyRef.current) {
         try {
           pdfDocProxyRef.current.cleanup();
@@ -1131,6 +1146,7 @@ export default function App() {
     try {
       // Clean up previous PDF proxy and caches to prevent memory leaks
       clearPdfRenderCaches();
+      clearInvertedPageExportCache();
       if (pdfDocProxy) {
         try {
           await pdfDocProxy.cleanup();
@@ -1279,16 +1295,22 @@ export default function App() {
 
       pushHistory(currentMods);
       setActivePageIndex(pageIndex);
-      setSelectedObjectId(newObj.id);
 
-      if (startEditingText && newObj.type === 'text') {
-        setActiveTool('select');
-        setEditingTextObjectId(newObj.id);
-      } else {
+      if (newObj.layerType === 'drawing' || activeTool === 'draw') {
+        // Keep Draw tool active and do NOT automatically select the newly drawn stroke
+        setSelectedObjectId(null);
         setEditingTextObjectId(null);
+      } else {
+        setSelectedObjectId(newObj.id);
+        if (startEditingText && newObj.type === 'text') {
+          setActiveTool('select');
+          setEditingTextObjectId(newObj.id);
+        } else {
+          setEditingTextObjectId(null);
+        }
       }
     },
-    [modifications, pushHistory]
+    [modifications, pushHistory, activeTool]
   );
 
   const insertImageFileAtBounds = useCallback(
@@ -2906,6 +2928,92 @@ export default function App() {
     [activePageIndex, pages, modifications, filename, pushHistory, triggerPageToast]
   );
 
+  // ================= INVERT PDF COLORS WORKFLOW =================
+  const invertedPageCount = useMemo(
+    () => pages.filter((p) => p.isColorInverted).length,
+    [pages]
+  );
+
+  const handleApplyInvertColors = useCallback(
+    async (options: {
+      scope: InvertColorsScope;
+      targetPageIndices: number[];
+      qualityPreset: InvertQualityPreset;
+      forceInvertState?: boolean;
+    }) => {
+      if (pages.length === 0 || isProcessingInvert) return;
+
+      const targetIndices = options.targetPageIndices.filter(
+        (idx) => idx >= 0 && idx < pages.length
+      );
+
+      if (targetIndices.length === 0) return;
+
+      setIsProcessingInvert(true);
+      cancelInvertRef.current = false;
+      setInvertProgress({
+        currentPage: 0,
+        totalPages: targetIndices.length,
+        pageNumber: targetIndices[0] + 1,
+        statusText: 'Preparing pages for color inversion...',
+        progress: 0,
+      });
+
+      try {
+        const result = await processInvertPagesAsync({
+          pdfDocProxy,
+          pages,
+          pageObjectsMap,
+          modifications,
+          targetPageIndices: targetIndices,
+          qualityPreset: options.qualityPreset,
+          forceInvertState: options.forceInvertState,
+          onProgress: (update) => setInvertProgress(update),
+          shouldCancel: () => cancelInvertRef.current,
+        });
+
+        if (result.cancelled || cancelInvertRef.current) {
+          triggerPageToast('Color inversion cancelled');
+          return;
+        }
+
+        if (result.invertedCount > 0) {
+          commitDocumentState(
+            result.nextPages,
+            result.nextObjectsMap,
+            result.nextMods,
+            activePageIndex
+          );
+          setIsInvertColorsModalOpen(false);
+          triggerPageToast(
+            options.forceInvertState === false
+              ? `Restored original colors on ${result.invertedCount} ${result.invertedCount === 1 ? 'page' : 'pages'}`
+              : `Inverted PDF colors on ${result.invertedCount} ${result.invertedCount === 1 ? 'page' : 'pages'}`
+          );
+        }
+      } catch {
+        setErrorToast('Failed to invert PDF colors. Please try again.');
+      } finally {
+        setIsProcessingInvert(false);
+        setInvertProgress(null);
+      }
+    },
+    [
+      pdfDocProxy,
+      pages,
+      pageObjectsMap,
+      modifications,
+      activePageIndex,
+      isProcessingInvert,
+      commitDocumentState,
+      triggerPageToast,
+    ]
+  );
+
+  const handleCancelInvert = useCallback(() => {
+    cancelInvertRef.current = true;
+  }, []);
+
   // ================= SAVE & SAVE AS WORKFLOW =================
   // 1. Save (Preserves original filename by default, writes to existing file handle or prompts location)
   const handleSavePdf = useCallback(async () => {
@@ -2919,7 +3027,8 @@ export default function App() {
         modifications,
         allOriginalObjectsMap,
         pages,
-        protectionConfig
+        protectionConfig,
+        pdfDocProxy
       );
 
       // Preserve the original filename by default
@@ -2946,7 +3055,7 @@ export default function App() {
       setIsProcessing(false);
       setLoadingMessage('');
     }
-  }, [pdfBytes, modifications, allOriginalObjectsMap, pages, protectionConfig, filename]);
+  }, [pdfBytes, modifications, allOriginalObjectsMap, pages, protectionConfig, pdfDocProxy, filename]);
 
   // 2. Save As (Choose custom filename, choose destination folder via system dialog, optionally switch active session to new file)
   const handleConfirmSaveAs = useCallback(
@@ -2966,7 +3075,8 @@ export default function App() {
           modifications,
           allOriginalObjectsMap,
           pages,
-          protectionConfig
+          protectionConfig,
+          pdfDocProxy
         );
 
         const saveResult = await savePdfToDestination(modifiedBytes, options.targetFilename, {
@@ -3004,12 +3114,14 @@ export default function App() {
       allOriginalObjectsMap,
       pages,
       protectionConfig,
+      pdfDocProxy,
       triggerPageToast,
     ]
   );
 
   // Close document / window handler
   const handleCloseDocumentOrWindow = useCallback(() => {
+    clearInvertedPageExportCache();
     setFilename(null);
     setPdfBytes(null);
     setPages([]);
@@ -3067,6 +3179,8 @@ export default function App() {
       }
       if (!isCmdOrCtrl && e.key.toLowerCase() === 'd') {
         setActiveTool('draw');
+        setSelectedObjectId(null);
+        setEditingTextObjectId(null);
       }
       if (!isCmdOrCtrl && e.key.toLowerCase() === 'c') {
         setActiveTool('crop');
@@ -3105,8 +3219,11 @@ export default function App() {
         handleRedo();
       }
 
-      // Escape: Finish inline edit, deselect object, or close modals
+      // Escape: Exit Draw mode, finish inline edit, deselect object, or close modals
       if (e.key === 'Escape') {
+        if (activeTool === 'draw') {
+          setActiveTool('select');
+        }
         if (editingTextObjectId) {
           setEditingTextObjectId(null);
         } else {
@@ -3124,6 +3241,9 @@ export default function App() {
         if (!isRunningOcr) {
           setIsOcrModalOpen(false);
         }
+        if (!isProcessingInvert) {
+          setIsInvertColorsModalOpen(false);
+        }
       }
     };
 
@@ -3131,11 +3251,13 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
     filename,
+    activeTool,
     selectedObject,
     copiedObject,
     selectedObjectId,
     editingTextObjectId,
     isRunningOcr,
+    isProcessingInvert,
     handleCopyObject,
     handlePasteObject,
     handleDeleteObject,
@@ -3153,7 +3275,13 @@ export default function App() {
     );
     const hasPageStructureMods =
       historyIndex > 0 ||
-      pages.some((p, idx) => p.isBlankPage || (p.rotation || 0) !== 0 || p.originalPageIndex !== idx);
+      pages.some(
+        (p, idx) =>
+          p.isBlankPage ||
+          (p.rotation || 0) !== 0 ||
+          p.originalPageIndex !== idx ||
+          Boolean(p.isColorInverted)
+      );
     return hasObjectMods || hasPageStructureMods;
   }, [modifications, historyIndex, pages]);
 
@@ -3243,6 +3371,9 @@ export default function App() {
         onOpenPageOrganizer={() => setIsOrganizerModalOpen(true)}
         onToolChange={(tool) => {
           setActiveTool(tool);
+          if (tool === 'draw') {
+            setSelectedObjectId(null);
+          }
           if (tool !== 'select') {
             setEditingTextObjectId(null);
           }
@@ -3277,6 +3408,8 @@ export default function App() {
         onOpenWatermarkModal={() => setIsWatermarkModalOpen(true)}
         onOpenPageNumberModal={() => setIsPageNumberModalOpen(true)}
         onOpenHeaderFooterModal={() => setIsHeaderFooterModalOpen(true)}
+        onOpenInvertColorsModal={() => setIsInvertColorsModalOpen(true)}
+        invertedPageCount={invertedPageCount}
         onToggleSidebar={() => {
           setIsSidebarOpen((prev) => {
             const next = !prev;
@@ -3646,6 +3779,21 @@ export default function App() {
         isProcessing={isProcessing}
         onClose={() => setIsSaveAsModalOpen(false)}
         onConfirmSaveAs={handleConfirmSaveAs}
+      />
+
+      {/* Invert PDF Colors Modal (Tools -> Invert Colors) */}
+      <InvertColorsModal
+        isOpen={isInvertColorsModalOpen}
+        pdfDocProxy={pdfDocProxy}
+        pages={pages}
+        currentPageIndex={activePageIndex}
+        isProcessingInvert={isProcessingInvert}
+        invertProgress={invertProgress}
+        canUndo={historyIndex > 0}
+        onClose={() => setIsInvertColorsModalOpen(false)}
+        onApplyInvertColors={handleApplyInvertColors}
+        onCancelInvert={handleCancelInvert}
+        onUndoLastAction={handleUndo}
       />
 
       {/* Close Unsaved Document Confirmation Modal */}

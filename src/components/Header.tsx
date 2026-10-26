@@ -35,6 +35,7 @@ import {
   Shield,
   ShieldCheck,
   Pencil,
+  Contrast,
 } from 'lucide-react';
 import { ViewMode } from '../types/pdf';
 
@@ -88,6 +89,7 @@ interface HeaderProps {
   onOpenWatermarkModal?: () => void;
   onOpenPageNumberModal?: () => void;
   onOpenHeaderFooterModal?: () => void;
+  onOpenInvertColorsModal?: () => void;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   isInspectorOpen?: boolean;
@@ -142,11 +144,13 @@ const HeaderComponent: React.FC<HeaderProps> = ({
   onOpenWatermarkModal,
   onOpenPageNumberModal,
   onOpenHeaderFooterModal,
+  onOpenInvertColorsModal,
   isSidebarOpen = true,
   onToggleSidebar,
   isInspectorOpen = true,
   onToggleInspector,
 }) => {
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pageMenuRef = useRef<HTMLDivElement>(null);
   const toolsMenuRef = useRef<HTMLDivElement>(null);
@@ -610,10 +614,26 @@ const HeaderComponent: React.FC<HeaderProps> = ({
                     </span>
                     <span className="text-[10px] font-mono text-neutral-500">Margins</span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsToolsMenuOpen(false);
+                      onOpenInvertColorsModal?.();
+                    }}
+                    className="w-full px-3 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#282a30] flex items-center justify-between transition cursor-pointer"
+                  >
+                    <span className="flex items-center space-x-2.5">
+                      <Contrast className="w-3.5 h-3.5 text-indigo-400" />
+                      <span className="font-medium">Invert Colors</span>
+                    </span>
+                    <span className="text-[10px] font-mono text-neutral-500">Dark/Invert</span>
+                  </button>
                 </div>
               </div>
             )}
           </div>
+
 
           {/* Same Object Dropdown Menu (Find Same Object, Highlight Matches, Remove Same Object, Replace Same Object) */}
           <div className="relative" ref={sameObjectMenuRef}>

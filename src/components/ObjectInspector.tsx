@@ -923,7 +923,7 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
                   : activeTool === 'image'
                   ? 'Click on a page or drop an image file to place a resizable image.'
                   : activeTool === 'draw'
-                  ? 'Draw directly on the page to create a movable, resizable stroke object.'
+                  ? 'Draw continuously directly on the page. Press Esc or select another tool to exit Draw mode.'
                   : 'Click any object to move/resize, or double-click any text to edit inline.'}
               </p>
             </div>

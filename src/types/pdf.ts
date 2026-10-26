@@ -247,6 +247,9 @@ export interface BlankPageConfig {
   backgroundColor: string; // '#ffffff', '#000000', 'transparent', or custom hex color
 }
 
+export type InvertColorsScope = 'all' | 'current' | 'selected';
+export type InvertQualityPreset = 'standard' | 'high' | 'ultra';
+
 export interface PageInfo {
   id?: string; // Stable unique identifier across page reordering/insertions
   pageIndex: number; // Current 0-indexed position in document
@@ -261,4 +264,7 @@ export interface PageInfo {
   rotation?: number; // Additional rotation in degrees (0, 90, 180, 270)
   baseWidth?: number; // Unrotated width in PDF points
   baseHeight?: number; // Unrotated height in PDF points
+  isColorInverted?: boolean; // Whether page colors (background, text, images, vector graphics) are permanently inverted
+  invertDpiScale?: number; // Resolution scale factor for exporting inverted page
 }
+

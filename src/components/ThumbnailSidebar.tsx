@@ -11,6 +11,7 @@ import {
   getCachedThumbCanvas,
   setCachedThumbCanvas,
 } from '../utils/pdfExtractor';
+import { invertCanvasPixels } from '../utils/pdfColorInverter';
 import { getCssFontStack } from '../utils/pdfModifier';
 import {
   Sparkles,
@@ -320,8 +321,9 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
       // Case B: Source PDF page (check LRU base thumbnail cache first)
       const sourcePageNum = (page.originalPageIndex ?? page.pageIndex) + 1;
       const rotationKey = page.rotation || 0;
+      const invertKey = page.isColorInverted ? 1 : 0;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const cacheKey = `thumb-p-${sourcePageNum}-r-${rotationKey}-d-${dpr}`;
+      const cacheKey = `thumb-p-${sourcePageNum}-r-${rotationKey}-inv-${invertKey}-d-${dpr}`;
 
       const cachedBase = getCachedThumbCanvas(cacheKey);
       if (cachedBase) {
@@ -366,7 +368,10 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
           const buffer = document.createElement('canvas');
           buffer.width = pixelW;
           buffer.height = pixelH;
-          const bCtx = buffer.getContext('2d', { alpha: false });
+          const bCtx = buffer.getContext('2d', {
+            alpha: false,
+            willReadFrequently: Boolean(page.isColorInverted),
+          });
           if (!bCtx) return;
 
           bCtx.fillStyle = '#ffffff';
@@ -380,6 +385,10 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
 
           await renderTask.promise;
           if (cancelled) return;
+
+          if (page.isColorInverted) {
+            invertCanvasPixels(bCtx, pixelW, pixelH);
+          }
 
           // Store clean base render in cache so subsequent object edits never re-invoke PDF.js
           setCachedThumbCanvas(cacheKey, buffer);
@@ -442,6 +451,7 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
     page.isBlankPage,
     page.backgroundColor,
     page.rotation,
+    page.isColorInverted,
     page.thumbnailDataUrl,
     safePageWidth,
     safePageHeight,
@@ -450,6 +460,7 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
     pageObjects,
     pageMods,
   ]);
+
 
   return (
     <div

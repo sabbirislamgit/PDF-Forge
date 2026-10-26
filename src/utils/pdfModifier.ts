@@ -1,4 +1,5 @@
 import { PDFDocument, PDFFont, PDFImage, PDFPage, rgb, StandardFonts, degrees } from 'pdf-lib';
+import * as pdfjsLib from 'pdfjs-dist';
 import {
   DocumentModifications,
   PDFObject,
@@ -12,6 +13,7 @@ import {
 } from '../types/pdf';
 import { rotatePdfRect } from './pdfCoordinates';
 import { applyPdfEncryption } from './pdfSecurity';
+import { renderInvertedPdfPageHighRes } from './pdfColorInverter';
 
 /**
  * Converts a base64 DataURL string to a Uint8Array.
@@ -473,12 +475,28 @@ export async function applyModificationsAndExport(
   modifications: DocumentModifications,
   allDocumentObjects: Map<string, PDFObject>,
   pages?: PageInfo[],
-  protectionConfig?: PDFProtectionConfig
+  protectionConfig?: PDFProtectionConfig,
+  pdfDocProxy?: pdfjsLib.PDFDocumentProxy | null
 ): Promise<Uint8Array> {
   const srcPdfDoc = await PDFDocument.load(originalPdfBytes, { ignoreEncryption: true });
   const srcPageCount = srcPdfDoc.getPageCount();
 
   const targetPdfDoc = pages ? await PDFDocument.create() : srcPdfDoc;
+
+  // Lazily load pdf.js proxy only if needed for inverted pages and not already provided
+  let localPdfDocProxy: pdfjsLib.PDFDocumentProxy | null = pdfDocProxy || null;
+  let createdLocalProxy = false;
+  const ensurePdfDocProxy = async (): Promise<pdfjsLib.PDFDocumentProxy | null> => {
+    if (localPdfDocProxy) return localPdfDocProxy;
+    try {
+      const loadingTask = pdfjsLib.getDocument({ data: originalPdfBytes.slice() });
+      localPdfDocProxy = await loadingTask.promise;
+      createdLocalProxy = true;
+      return localPdfDocProxy;
+    } catch {
+      return null;
+    }
+  };
 
   if (pages) {
     for (let i = 0; i < pages.length; i++) {
@@ -503,6 +521,41 @@ export async function applyModificationsAndExport(
             height: pageH,
             color: parseHexColorToRgb(pInfo.backgroundColor),
           });
+        }
+      } else if (pInfo.isColorInverted) {
+        // Permanently invert page colors (background, text, images, vector graphics)
+        // using pdf.js for high-resolution rendering and pdf-lib for embedding at exact original page dimensions
+        const pageW = Math.max(50, pInfo.width || 595.28);
+        const pageH = Math.max(50, pInfo.height || 841.89);
+        const invertedPage = targetPdfDoc.addPage([pageW, pageH]);
+
+        // Fill black fallback background first
+        invertedPage.drawRectangle({
+          x: 0,
+          y: 0,
+          width: pageW,
+          height: pageH,
+          color: rgb(0, 0, 0),
+        });
+
+        const proxy = await ensurePdfDocProxy();
+        if (proxy) {
+          const invertedDataUrl = await renderInvertedPdfPageHighRes(
+            proxy,
+            pInfo.originalPageIndex! + 1,
+            pInfo.rotation || 0,
+            pInfo.invertDpiScale || 3.0
+          );
+          if (invertedDataUrl) {
+            const imgBytes = dataUrlToUint8Array(invertedDataUrl);
+            const embeddedInvertedImg = await targetPdfDoc.embedPng(imgBytes);
+            invertedPage.drawImage(embeddedInvertedImg, {
+              x: 0,
+              y: 0,
+              width: pageW,
+              height: pageH,
+            });
+          }
         }
       } else {
         const [copiedPage] = await targetPdfDoc.copyPages(srcPdfDoc, [pInfo.originalPageIndex!]);
@@ -607,13 +660,18 @@ export async function applyModificationsAndExport(
     const { width: pageWidth, height: pageHeight } = page.getSize();
     const pInfo = pages?.[pageIdx];
     const isBlank = pInfo?.isBlankPage || pInfo?.originalPageIndex === null;
-    const appliedRotation = !isBlank && pInfo?.rotation ? pInfo.rotation : 0;
+    // Note: For inverted pages, pInfo.rotation is already applied to the rendered page and [pageW, pageH]
+    const appliedRotation =
+      !isBlank && !pInfo?.isColorInverted && pInfo?.rotation ? pInfo.rotation : 0;
     const curViewW = pInfo?.width || pageWidth;
     const curViewH = pInfo?.height || pageHeight;
     const defaultPageBgHex =
       pInfo?.backgroundColor && pInfo.backgroundColor !== 'transparent'
         ? pInfo.backgroundColor
+        : pInfo?.isColorInverted
+        ? '#000000'
         : '#ffffff';
+
 
     // 1. Process REMOVALS: Cover original object bounds with local or page background
     for (const removedId of pageMods.removedObjectIds) {
@@ -861,12 +919,21 @@ export async function applyModificationsAndExport(
     }
   }
 
+  if (createdLocalProxy && localPdfDocProxy) {
+    try {
+      await localPdfDocProxy.cleanup();
+    } catch {
+      // ignore
+    }
+  }
+
   const rawSavedBytes = await targetPdfDoc.save();
   if (protectionConfig && protectionConfig.enabled) {
     return await applyPdfEncryption(rawSavedBytes, protectionConfig);
   }
   return rawSavedBytes;
 }
+
 
 /**
  * Initiates browser download of a PDF binary.

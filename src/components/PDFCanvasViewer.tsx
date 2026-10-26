@@ -31,7 +31,9 @@ import {
   setCachedPageCanvas,
 } from '../utils/pdfExtractor';
 import { getCssFontStack } from '../utils/pdfModifier';
+import { invertCanvasPixels } from '../utils/pdfColorInverter';
 import { ToolMode } from './Header';
+
 import {
   Copy,
   Trash2,
@@ -346,7 +348,8 @@ const PageItemComponent: React.FC<PageItemProps> = ({
 
       const sourcePageNum = (pageInfo.originalPageIndex ?? pageInfo.pageIndex) + 1;
       const rotationKey = pageInfo.rotation || 0;
-      const cacheKey = `p-${sourcePageNum}-r-${rotationKey}-z-${Math.round(zoom * 1000)}-d-${dpr}`;
+      const invertKey = pageInfo.isColorInverted ? 1 : 0;
+      const cacheKey = `p-${sourcePageNum}-r-${rotationKey}-inv-${invertKey}-z-${Math.round(zoom * 1000)}-d-${dpr}`;
 
       const cached = getCachedPageCanvas(cacheKey);
       if (cached) {
@@ -381,9 +384,11 @@ const PageItemComponent: React.FC<PageItemProps> = ({
         const offscreen = document.createElement('canvas');
         offscreen.width = targetW;
         offscreen.height = targetH;
-        const offCtx = offscreen.getContext('2d');
+        const offCtx = offscreen.getContext('2d', { willReadFrequently: Boolean(pageInfo.isColorInverted) });
         if (!offCtx) return;
 
+        offCtx.fillStyle = '#ffffff';
+        offCtx.fillRect(0, 0, targetW, targetH);
         offCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
         renderTask = page.render({
@@ -394,6 +399,11 @@ const PageItemComponent: React.FC<PageItemProps> = ({
 
         await renderTask.promise;
         if (cancelRender) return;
+
+        if (pageInfo.isColorInverted) {
+          offCtx.setTransform(1, 0, 0, 1, 0, 0);
+          invertCanvasPixels(offCtx, targetW, targetH);
+        }
 
         setCachedPageCanvas(cacheKey, offscreen);
 
@@ -437,6 +447,7 @@ const PageItemComponent: React.FC<PageItemProps> = ({
     pageInfo.isBlankPage,
     pageInfo.backgroundColor,
     pageInfo.rotation,
+    pageInfo.isColorInverted,
     pageInfo.width,
     pageInfo.height,
     zoom,
@@ -447,7 +458,10 @@ const PageItemComponent: React.FC<PageItemProps> = ({
   const defaultPageBg =
     pageInfo.backgroundColor && pageInfo.backgroundColor !== 'transparent'
       ? pageInfo.backgroundColor
+      : pageInfo.isColorInverted
+      ? '#000000'
       : '#ffffff';
+
 
   // Filter visible objects and removed original objects (excluding full-page backgrounds)
   const removedObjects = useMemo(
@@ -795,18 +809,20 @@ const PageItemComponent: React.FC<PageItemProps> = ({
               key={obj.id}
               onClick={(e) => {
                 if (activeTool === 'crop' && isDrawingCrop) return;
+                if (activeTool === 'draw') return;
                 if (isToolCreationMode && !isSelected) return;
                 e.stopPropagation();
                 onSelectObject(obj);
               }}
               onDoubleClick={(e) => {
+                if (activeTool === 'draw') return;
                 e.stopPropagation();
                 if (obj.type === 'text') {
                   onStartEditText(obj, pageInfo.pageIndex);
                 }
               }}
               onMouseDown={(e) => {
-                if (activeTool === 'crop') return;
+                if (activeTool === 'crop' || activeTool === 'draw') return;
                 if (isToolCreationMode && !isSelected) return;
                 if (isEditingThisText) {
                   // Allow clicking inside the textarea without starting a move drag
@@ -815,7 +831,9 @@ const PageItemComponent: React.FC<PageItemProps> = ({
                 onObjectMouseDown(e, obj, pageInfo.pageIndex, 'move');
               }}
               className={`absolute group transition-shadow duration-150 ${
-                (activeTool === 'crop' && isDrawingCrop) || (isToolCreationMode && !isSelected)
+                activeTool === 'draw' ||
+                (activeTool === 'crop' && isDrawingCrop) ||
+                (isToolCreationMode && !isSelected)
                   ? 'pointer-events-none '
                   : ''
               }${
@@ -1953,6 +1971,33 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
 
     onAddObjectOnPage(newDrawingObj, pageIdx, false);
   }, [freehandPageIndex, pages, zoom, drawColor, drawStrokeWidth, onAddObjectOnPage]);
+
+  const cancelFreehandStroke = useCallback(() => {
+    setIsDrawingFreehand(false);
+    setFreehandPageIndex(null);
+    setFreehandPoints([]);
+    freehandPointsRef.current = [];
+  }, []);
+
+  // Ensure freehand stroke is completed even if mouseup occurs outside container, or cancelled on Esc
+  useEffect(() => {
+    if (isDrawingFreehand) {
+      const handleWindowMouseUp = () => {
+        finalizeFreehandStroke();
+      };
+      const handleWindowKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          cancelFreehandStroke();
+        }
+      };
+      window.addEventListener('mouseup', handleWindowMouseUp);
+      window.addEventListener('keydown', handleWindowKeyDown);
+      return () => {
+        window.removeEventListener('mouseup', handleWindowMouseUp);
+        window.removeEventListener('keydown', handleWindowKeyDown);
+      };
+    }
+  }, [isDrawingFreehand, finalizeFreehandStroke, cancelFreehandStroke]);
 
   // ================= CROP / MARQUEE SELECTION LOGIC =================
   const handleStartCrop = useCallback(

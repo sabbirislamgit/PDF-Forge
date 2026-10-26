@@ -41,6 +41,8 @@ import {
   Files,
   File,
   Replace,
+  Contrast,
+  ChevronDown,
 } from 'lucide-react';
 import { ViewMode } from '../types/pdf';
 
@@ -62,6 +64,7 @@ export interface TitleBarProps {
   isProtected?: boolean;
   isFindReplaceOpen?: boolean;
   scannedPageCount?: number;
+  invertedPageCount?: number;
   primaryMode?: 'edit' | 'annotate';
   isSidebarOpen?: boolean;
   isInspectorOpen?: boolean;
@@ -117,9 +120,11 @@ export interface TitleBarProps {
   onOpenWatermarkModal?: () => void;
   onOpenPageNumberModal?: () => void;
   onOpenHeaderFooterModal?: () => void;
+  onOpenInvertColorsModal?: () => void;
   onToggleSidebar?: () => void;
   onToggleInspector?: () => void;
 }
+
 
 const DRAW_COLORS = ['#111827', '#dc2626', '#2563eb', '#16a34a', '#d97706', '#7c3aed'];
 
@@ -149,6 +154,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   isProtected = false,
   isFindReplaceOpen = false,
   scannedPageCount = 0,
+  invertedPageCount = 0,
   primaryMode = 'edit',
   isSidebarOpen = true,
   isInspectorOpen = true,
@@ -198,6 +204,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenWatermarkModal,
   onOpenPageNumberModal,
   onOpenHeaderFooterModal,
+  onOpenInvertColorsModal,
   onToggleSidebar,
   onToggleInspector,
 }) => {
@@ -206,12 +213,14 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     typeof window !== 'undefined' ? window.innerWidth : 1280
   );
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+  const [isToolsDropdownOpen, setIsToolsDropdownOpen] = useState(false);
   const [isTauri, setIsTauri] = useState(false);
   const [tauriMaximized, setTauriMaximized] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const ribbonRef = useRef<HTMLDivElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
+  const toolsDropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Switch to Home or Edit tab automatically when a document is opened
@@ -266,10 +275,14 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
         setIsMoreMenuOpen(false);
       }
+      if (toolsDropdownRef.current && !toolsDropdownRef.current.contains(e.target as Node)) {
+        setIsToolsDropdownOpen(false);
+      }
     };
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsMoreMenuOpen(false);
+        setIsToolsDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -367,6 +380,14 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     if (activeTab === 'home') {
       if (!isMd) {
         items.push({
+          id: 'invert-colors',
+          label: invertedPageCount > 0 ? `Invert Colors (${invertedPageCount} inverted)` : 'Invert Colors',
+          icon: <Contrast className="w-4 h-4 text-indigo-400" />,
+          onClick: () => onOpenInvertColorsModal?.(),
+          disabled: !filename,
+          badge: invertedPageCount > 0 ? invertedPageCount : undefined,
+        });
+        items.push({
           id: 'search',
           label: 'Find & Replace',
           icon: <Search className="w-4 h-4 text-sky-400" />,
@@ -395,6 +416,14 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       }
     } else if (activeTab === 'edit') {
       if (!isMd) {
+        items.push({
+          id: 'invert-colors-edit',
+          label: invertedPageCount > 0 ? `Invert Colors (${invertedPageCount} inverted)` : 'Invert Colors',
+          icon: <Contrast className="w-4 h-4 text-indigo-400" />,
+          onClick: () => onOpenInvertColorsModal?.(),
+          disabled: !filename,
+          badge: invertedPageCount > 0 ? invertedPageCount : undefined,
+        });
         items.push({
           id: 'find-same',
           label: matchCount > 0 ? `Find Same (${matchCount})` : 'Find Same Object',
@@ -435,7 +464,8 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           active: primaryMode === 'annotate',
         });
       }
-    } else if (activeTab === 'organize') {
+    }
+ else if (activeTab === 'organize') {
       if (!isMd) {
         items.push({
           id: 'blank-page',
@@ -652,6 +682,143 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               </button>
             );
           })}
+
+          {/* Tools Dropdown Menu (Tools -> Invert Colors, OCR, Watermark, etc.) */}
+          <div ref={toolsDropdownRef} className="relative h-full flex items-center">
+            <button
+              type="button"
+              onClick={() => setIsToolsDropdownOpen((prev) => !prev)}
+              aria-expanded={isToolsDropdownOpen}
+              className={`relative px-3 py-1 text-xs font-medium rounded-t-[4px] flex items-center gap-1 transition-colors ${
+                isToolsDropdownOpen
+                  ? 'bg-[#22232a] text-zinc-100 font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
+              }`}
+            >
+              <span>Tools</span>
+              <ChevronDown
+                className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                  isToolsDropdownOpen ? 'rotate-180' : ''
+                }`}
+              />
+              {invertedPageCount > 0 && (
+                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+              )}
+            </button>
+
+            {isToolsDropdownOpen && (
+              <div className="absolute left-0 top-full mt-0.5 w-60 rounded-md bg-[#22232a] border border-[#30323e] shadow-2xl py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100">
+                <div className="px-3 py-1 text-[10px] font-semibold text-zinc-500 tracking-wider uppercase border-b border-[#30323e]">
+                  PDF Tools
+                </div>
+
+                <button
+                  type="button"
+                  disabled={!filename}
+                  onClick={() => {
+                    setIsToolsDropdownOpen(false);
+                    onOpenInvertColorsModal?.();
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs flex items-center justify-between text-zinc-200 hover:text-white hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Contrast className="w-4 h-4 text-indigo-400" />
+                    <span className="font-medium">Invert Colors</span>
+                  </span>
+                  {invertedPageCount > 0 ? (
+                    <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-indigo-500/20 text-indigo-300">
+                      {invertedPageCount} inverted
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-mono text-zinc-500">Dark/Invert</span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!filename}
+                  onClick={() => {
+                    setIsToolsDropdownOpen(false);
+                    onOpenOcrModal?.();
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs flex items-center justify-between text-zinc-200 hover:text-white hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <ScanText className="w-4 h-4 text-emerald-400" />
+                    <span>OCR Scanned PDF</span>
+                  </span>
+                  {scannedPageCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300">
+                      {scannedPageCount}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!filename}
+                  onClick={() => {
+                    setIsToolsDropdownOpen(false);
+                    onToggleFindReplace?.();
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs flex items-center justify-between text-zinc-200 hover:text-white hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Search className="w-4 h-4 text-sky-400" />
+                    <span>Find &amp; Replace</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-zinc-500">Ctrl+F</span>
+                </button>
+
+                <div className="my-1 border-t border-[#30323e]" />
+
+                <button
+                  type="button"
+                  disabled={!filename}
+                  onClick={() => {
+                    setIsToolsDropdownOpen(false);
+                    onOpenWatermarkModal?.();
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs flex items-center justify-between text-zinc-200 hover:text-white hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Stamp className="w-4 h-4 text-teal-400" />
+                    <span>Watermark</span>
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!filename}
+                  onClick={() => {
+                    setIsToolsDropdownOpen(false);
+                    onOpenPageNumberModal?.();
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs flex items-center justify-between text-zinc-200 hover:text-white hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Hash className="w-4 h-4 text-indigo-400" />
+                    <span>Page Numbers</span>
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!filename}
+                  onClick={() => {
+                    setIsToolsDropdownOpen(false);
+                    onOpenHeaderFooterModal?.();
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs flex items-center justify-between text-zinc-200 hover:text-white hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <FileText className="w-4 h-4 text-sky-400" />
+                    <span>Header &amp; Footer</span>
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
         </nav>
 
         {/* Right Info Indicators */}
@@ -659,6 +826,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           {pageCount > 0 && (
             <span>
               Page {currentPage} of {pageCount}
+            </span>
+          )}
+          {invertedPageCount > 0 && (
+            <span className="flex items-center gap-1 text-indigo-400">
+              <Contrast className="w-3.5 h-3.5" />
+              {invertedPageCount} Inverted
             </span>
           )}
           {isProtected && (
@@ -906,6 +1079,27 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   <PenTool className="w-5 h-5 mb-1" />
                   <span className="text-[11px] font-medium leading-tight">Draw</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={onOpenInvertColorsModal}
+                  disabled={!filename}
+                  className={`relative h-[62px] min-w-[54px] sm:min-w-[62px] px-1.5 flex flex-col items-center justify-center rounded-[4px] disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${
+                    invertedPageCount > 0
+                      ? 'bg-indigo-600/25 text-indigo-300 border border-indigo-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Invert PDF Colors (Background, Text, Images, Vector Graphics)"
+                >
+                  <Contrast className="w-5 h-5 text-indigo-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight whitespace-nowrap">
+                    Invert Colors
+                  </span>
+                  {invertedPageCount > 0 && (
+                    <span className="absolute top-1 right-1 px-1 py-0.2 bg-indigo-500 text-[9px] font-bold text-white rounded-full">
+                      {invertedPageCount}
+                    </span>
+                  )}
+                </button>
               </div>
               <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
                 Tools
@@ -1040,11 +1234,28 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   <PenTool className="w-5 h-5 mb-1" />
                   <span className="text-[11px] font-medium leading-tight">Draw</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={onOpenInvertColorsModal}
+                  disabled={!filename}
+                  className={`relative h-[62px] min-w-[52px] sm:min-w-[60px] px-1.5 flex flex-col items-center justify-center rounded-[4px] disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${
+                    invertedPageCount > 0
+                      ? 'bg-indigo-600/25 text-indigo-300 border border-indigo-500/40'
+                      : 'hover:bg-zinc-700/60 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Invert PDF Colors"
+                >
+                  <Contrast className="w-5 h-5 text-indigo-400 mb-1" />
+                  <span className="text-[11px] font-medium leading-tight whitespace-nowrap">
+                    Invert Colors
+                  </span>
+                </button>
               </div>
               <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
                 Tools
               </span>
             </div>
+
 
             <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
 

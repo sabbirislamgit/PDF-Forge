@@ -11,7 +11,10 @@ import {
   TextAlign,
   FontWeight,
   FontStyle,
+  AnnotationItem,
+  AnnotationType,
 } from '../types/pdf';
+import { AnnotationOverlay } from './AnnotationOverlay';
 import {
   pdfToViewportRect,
   viewportToPdfRect,
@@ -124,6 +127,16 @@ interface PDFCanvasViewerProps {
   onPasteObject: () => void;
   onClearClipboard: () => void;
   onContainerResize?: (width: number) => void;
+  primaryMode?: 'edit' | 'annotate';
+  activeAnnotationType?: AnnotationType | null;
+  annotationColor?: string;
+  annotationStrokeWidth?: number;
+  annotationOpacity?: number;
+  selectedAnnotationId?: string | null;
+  onSelectAnnotation?: (id: string | null) => void;
+  onAddAnnotation?: (annot: AnnotationItem, pageIndex: number) => void;
+  onUpdateAnnotation?: (annot: AnnotationItem, pageIndex: number) => void;
+  onDeleteAnnotation?: (id: string, pageIndex: number) => void;
 }
 
 type DragMode = 'move' | 'rotate' | 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | null;
@@ -144,6 +157,16 @@ interface PageItemProps {
   isDrawingCrop: boolean;
   isCropActiveOnThisPage: boolean;
   cropMarquee: ViewportRect | null;
+  primaryMode?: 'edit' | 'annotate';
+  activeAnnotationType?: AnnotationType | null;
+  annotationColor?: string;
+  annotationStrokeWidth?: number;
+  annotationOpacity?: number;
+  selectedAnnotationId?: string | null;
+  onSelectAnnotation?: (id: string | null) => void;
+  onAddAnnotation?: (annot: AnnotationItem) => void;
+  onUpdateAnnotation?: (annot: AnnotationItem) => void;
+  onDeleteAnnotation?: (id: string) => void;
   onSelectObject: (obj: PDFObject | null) => void;
   onStartEditText: (obj: PDFObject, pageIndex: number) => void;
   onStopEditText: () => void;
@@ -195,6 +218,16 @@ const PageItemComponent: React.FC<PageItemProps> = ({
   isDrawingCrop,
   isCropActiveOnThisPage,
   cropMarquee,
+  primaryMode,
+  activeAnnotationType,
+  annotationColor,
+  annotationStrokeWidth,
+  annotationOpacity,
+  selectedAnnotationId,
+  onSelectAnnotation,
+  onAddAnnotation,
+  onUpdateAnnotation,
+  onDeleteAnnotation,
   onSelectObject,
   onStartEditText,
   onStopEditText,
@@ -1189,6 +1222,24 @@ const PageItemComponent: React.FC<PageItemProps> = ({
             </div>
           );
         })}
+
+        {/* Interactive Annotation Overlay (Markup & Comments) */}
+        <AnnotationOverlay
+          pageIndex={pageInfo.pageIndex}
+          pageInfo={pageInfo}
+          zoom={zoom}
+          annotations={pageModifications.annotations || []}
+          selectedAnnotationId={selectedAnnotationId || null}
+          onSelectAnnotation={onSelectAnnotation || (() => {})}
+          onAddAnnotation={onAddAnnotation || (() => {})}
+          onUpdateAnnotation={onUpdateAnnotation || (() => {})}
+          onDeleteAnnotation={onDeleteAnnotation || (() => {})}
+          activeAnnotationType={activeAnnotationType || null}
+          currentColor={annotationColor || '#f59e0b'}
+          strokeWidth={annotationStrokeWidth || 2}
+          opacity={annotationOpacity || 1}
+          isDrawingMode={primaryMode === 'annotate'}
+        />
     </div>
   );
 };
@@ -1216,7 +1267,13 @@ const PageItem = React.memo(PageItemComponent, (prev, next) => {
     prev.activeTool !== next.activeTool ||
     prev.isDrawingCrop !== next.isDrawingCrop ||
     prev.isCropActiveOnThisPage !== next.isCropActiveOnThisPage ||
-    prev.cropMarquee !== next.cropMarquee
+    prev.cropMarquee !== next.cropMarquee ||
+    prev.primaryMode !== next.primaryMode ||
+    prev.activeAnnotationType !== next.activeAnnotationType ||
+    prev.selectedAnnotationId !== next.selectedAnnotationId ||
+    prev.annotationColor !== next.annotationColor ||
+    prev.annotationStrokeWidth !== next.annotationStrokeWidth ||
+    prev.annotationOpacity !== next.annotationOpacity
   ) {
     return false;
   }
@@ -1291,6 +1348,16 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
   onPasteObject,
   onClearClipboard,
   onContainerResize,
+  primaryMode,
+  activeAnnotationType,
+  annotationColor,
+  annotationStrokeWidth,
+  annotationOpacity,
+  selectedAnnotationId,
+  onSelectAnnotation,
+  onAddAnnotation,
+  onUpdateAnnotation,
+  onDeleteAnnotation,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [copiedNotification, setCopiedNotification] = useState<string | null>(null);
@@ -2191,6 +2258,16 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
                 onTriggerCopy={handleTriggerCopy}
                 onFindEverywhere={onFindEverywhere}
                 onDeleteObject={onDeleteObject}
+                primaryMode={primaryMode}
+                activeAnnotationType={activeAnnotationType}
+                annotationColor={annotationColor}
+                annotationStrokeWidth={annotationStrokeWidth}
+                annotationOpacity={annotationOpacity}
+                selectedAnnotationId={selectedAnnotationId}
+                onSelectAnnotation={onSelectAnnotation}
+                onAddAnnotation={(annot) => onAddAnnotation?.(annot, page.pageIndex)}
+                onUpdateAnnotation={(annot) => onUpdateAnnotation?.(annot, page.pageIndex)}
+                onDeleteAnnotation={(id) => onDeleteAnnotation?.(id, page.pageIndex)}
               />
             );
           })}
@@ -2229,6 +2306,16 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
             onTriggerCopy={handleTriggerCopy}
             onFindEverywhere={onFindEverywhere}
             onDeleteObject={onDeleteObject}
+            primaryMode={primaryMode}
+            activeAnnotationType={activeAnnotationType}
+            annotationColor={annotationColor}
+            annotationStrokeWidth={annotationStrokeWidth}
+            annotationOpacity={annotationOpacity}
+            selectedAnnotationId={selectedAnnotationId}
+            onSelectAnnotation={onSelectAnnotation}
+            onAddAnnotation={(annot) => onAddAnnotation?.(annot, singlePageInfo.pageIndex)}
+            onUpdateAnnotation={(annot) => onUpdateAnnotation?.(annot, singlePageInfo.pageIndex)}
+            onDeleteAnnotation={(id) => onDeleteAnnotation?.(id, singlePageInfo.pageIndex)}
           />
         </div>
       )}

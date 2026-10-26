@@ -32,12 +32,20 @@ import {
   PanelLeft,
   PanelRight,
   MoreHorizontal,
+  Shield,
+  ShieldCheck,
+  Pencil,
 } from 'lucide-react';
 import { ViewMode } from '../types/pdf';
 
 export type ToolMode = 'select' | 'crop';
 
 interface HeaderProps {
+  primaryMode?: 'edit' | 'annotate';
+  onChangePrimaryMode?: (mode: 'edit' | 'annotate') => void;
+  onOpenProtection?: () => void;
+  isProtected?: boolean;
+  onOpenPageOrganizer?: () => void;
   filename: string | null;
   pageCount: number;
   currentPage: number;
@@ -87,6 +95,11 @@ interface HeaderProps {
 }
 
 const HeaderComponent: React.FC<HeaderProps> = ({
+  primaryMode = 'edit',
+  onChangePrimaryMode,
+  onOpenProtection,
+  isProtected = false,
+  onOpenPageOrganizer,
   filename,
   pageCount,
   currentPage,
@@ -214,16 +227,16 @@ const HeaderComponent: React.FC<HeaderProps> = ({
         <div className="flex items-center space-x-2 min-w-0">
           {/* Custom App Logo Badge */}
           <img
-            src="./assets/aistudio/Icon_51857bee.png"
-            alt="PDF Object Editor"
-            className="w-8 h-8 object-contain drop-shadow-md shrink-0"
+            src="/app-logo.png"
+            alt="Sabbir PDF Editor"
+            className="w-8 h-8 object-contain drop-shadow-md shrink-0 rounded"
           />
           <div className="min-w-0">
             <div className="flex items-center space-x-1.5">
               <span className="font-semibold text-white text-xs sm:text-sm tracking-tight truncate">
-                PDF Object Editor
+                Sabbir PDF Editor
               </span>
-              <span className="hidden sm:inline-block text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30 shrink-0">
+              <span className="hidden sm:inline-block text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 border border-indigo-500/30 shrink-0">
                 PRO
               </span>
             </div>
@@ -248,6 +261,72 @@ const HeaderComponent: React.FC<HeaderProps> = ({
       {/* Center: Tools, Page Menu, Document Tools Menu, Viewer Modes & Zoom Controls */}
       {filename && (
         <div className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
+          {/* Primary Suite Mode: Edit Objects vs Annotate & Markup */}
+          {onChangePrimaryMode && (
+            <div className="flex items-center bg-[#15161a] p-0.5 rounded-lg border border-[#353844] shadow-xs">
+              <button
+                type="button"
+                onClick={() => onChangePrimaryMode('edit')}
+                title="Object Editing Mode"
+                className={`px-2.5 py-1.5 rounded-md text-xs font-semibold flex items-center space-x-1.5 transition cursor-pointer ${
+                  primaryMode === 'edit'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-neutral-400 hover:text-white'
+                }`}
+              >
+                <MousePointer className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Edit</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangePrimaryMode('annotate')}
+                title="Comments & Annotations Mode"
+                className={`px-2.5 py-1.5 rounded-md text-xs font-semibold flex items-center space-x-1.5 transition cursor-pointer ${
+                  primaryMode === 'annotate'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-neutral-400 hover:text-white'
+                }`}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Annotate</span>
+              </button>
+            </div>
+          )}
+
+          {/* Full-Screen Page Organizer Action */}
+          {onOpenPageOrganizer && (
+            <button
+              type="button"
+              onClick={onOpenPageOrganizer}
+              title="Full-Screen Page Organizer: Drag, duplicate, rotate, and delete pages"
+              className="px-2.5 xl:px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#353844] bg-[#22242c] hover:bg-[#2b2d38] text-neutral-200 hover:text-white flex items-center space-x-1.5 transition cursor-pointer shadow-xs"
+            >
+              <LayoutGrid className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden sm:inline">Organizer</span>
+            </button>
+          )}
+
+          {/* PDF Protection Action */}
+          {onOpenProtection && (
+            <button
+              type="button"
+              onClick={onOpenProtection}
+              title={isProtected ? 'Document is encrypted and password-protected' : 'Protect PDF with open password and restrictions'}
+              className={`px-2.5 xl:px-3 py-1.5 rounded-lg text-xs font-semibold border flex items-center space-x-1.5 transition cursor-pointer shadow-xs ${
+                isProtected
+                  ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25'
+                  : 'border-[#353844] bg-[#22242c] hover:bg-[#2b2d38] text-neutral-200 hover:text-white'
+              }`}
+            >
+              {isProtected ? (
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <Shield className="w-3.5 h-3.5 text-neutral-400" />
+              )}
+              <span className="hidden sm:inline">{isProtected ? 'Secured' : 'Protect'}</span>
+            </button>
+          )}
+
           {/* Tool Mode Segmented Control: Object Select vs Area Crop */}
           <div className="flex items-center bg-[#141414] p-0.5 rounded-lg border border-[#383838]">
             <button

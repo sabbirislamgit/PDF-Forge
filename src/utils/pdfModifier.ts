@@ -7,8 +7,11 @@ import {
   FontWeight,
   FontStyle,
   TextAlign,
+  PDFProtectionConfig,
+  AnnotationItem,
 } from '../types/pdf';
 import { rotatePdfRect } from './pdfCoordinates';
+import { applyPdfEncryption } from './pdfSecurity';
 
 /**
  * Converts a base64 DataURL string to a Uint8Array.
@@ -469,7 +472,8 @@ export async function applyModificationsAndExport(
   originalPdfBytes: Uint8Array,
   modifications: DocumentModifications,
   allDocumentObjects: Map<string, PDFObject>,
-  pages?: PageInfo[]
+  pages?: PageInfo[],
+  protectionConfig?: PDFProtectionConfig
 ): Promise<Uint8Array> {
   const srcPdfDoc = await PDFDocument.load(originalPdfBytes, { ignoreEncryption: true });
   const srcPageCount = srcPdfDoc.getPageCount();
@@ -725,9 +729,143 @@ export async function applyModificationsAndExport(
         });
       }
     }
+
+    // 4. Process ANNOTATIONS: Sticky Notes, Highlights, Underlines, Strikeouts, Free Text, Rects, Circles, Arrows, Pencil
+    if (pageMods.annotations && pageMods.annotations.length > 0) {
+      for (const annot of pageMods.annotations) {
+        const bounds = unrotateRectToBaseSpace(annot.bounds, curViewW, curViewH, appliedRotation);
+        const annotRgb = parseHexColorToRgb(annot.color, { r: 0.95, g: 0.6, b: 0.1 });
+        const opacity = annot.opacity ?? 1;
+
+        if (annot.type === 'rect') {
+          page.drawRectangle({
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            borderColor: annotRgb,
+            borderWidth: annot.strokeWidth || 2,
+            color: annot.fillColor ? parseHexColorToRgb(annot.fillColor) : undefined,
+            opacity,
+          });
+        } else if (annot.type === 'circle') {
+          page.drawEllipse({
+            x: bounds.x + bounds.width / 2,
+            y: bounds.y + bounds.height / 2,
+            xScale: bounds.width / 2,
+            yScale: bounds.height / 2,
+            borderColor: annotRgb,
+            borderWidth: annot.strokeWidth || 2,
+            color: annot.fillColor ? parseHexColorToRgb(annot.fillColor) : undefined,
+            opacity,
+          });
+        } else if (annot.type === 'highlight') {
+          page.drawRectangle({
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            color: annotRgb,
+            opacity: annot.opacity ?? 0.35,
+          });
+        } else if (annot.type === 'underline') {
+          page.drawLine({
+            start: { x: bounds.x, y: bounds.y },
+            end: { x: bounds.x + bounds.width, y: bounds.y },
+            color: annotRgb,
+            thickness: annot.strokeWidth || 2,
+            opacity,
+          });
+        } else if (annot.type === 'strikeout') {
+          page.drawLine({
+            start: { x: bounds.x, y: bounds.y + bounds.height / 2 },
+            end: { x: bounds.x + bounds.width, y: bounds.y + bounds.height / 2 },
+            color: annotRgb,
+            thickness: annot.strokeWidth || 2,
+            opacity,
+          });
+        } else if (annot.type === 'arrow') {
+          const x1 = bounds.x;
+          const y1 = bounds.y;
+          const x2 = bounds.x + bounds.width;
+          const y2 = bounds.y + bounds.height;
+          page.drawLine({
+            start: { x: x1, y: y1 },
+            end: { x: x2, y: y2 },
+            color: annotRgb,
+            thickness: annot.strokeWidth || 2,
+            opacity,
+          });
+          const angle = Math.atan2(y2 - y1, x2 - x1);
+          const arrowLen = 10;
+          page.drawLine({
+            start: { x: x2, y: y2 },
+            end: {
+              x: x2 - arrowLen * Math.cos(angle - Math.PI / 6),
+              y: y2 - arrowLen * Math.sin(angle - Math.PI / 6),
+            },
+            color: annotRgb,
+            thickness: annot.strokeWidth || 2,
+            opacity,
+          });
+          page.drawLine({
+            start: { x: x2, y: y2 },
+            end: {
+              x: x2 - arrowLen * Math.cos(angle + Math.PI / 6),
+              y: y2 - arrowLen * Math.sin(angle + Math.PI / 6),
+            },
+            color: annotRgb,
+            thickness: annot.strokeWidth || 2,
+            opacity,
+          });
+        } else if (annot.type === 'pencil' && annot.points && annot.points.length > 1) {
+          for (let pi = 0; pi < annot.points.length - 1; pi++) {
+            const p1 = annot.points[pi];
+            const p2 = annot.points[pi + 1];
+            page.drawLine({
+              start: { x: p1.x, y: p1.y },
+              end: { x: p2.x, y: p2.y },
+              color: annotRgb,
+              thickness: annot.strokeWidth || 2,
+              opacity,
+            });
+          }
+        } else if (annot.type === 'text' && annot.text) {
+          await renderTextObjectOntoPage(page, {
+            text: annot.text,
+            bounds,
+            fontSize: 12,
+            color: annot.color,
+            opacity,
+          });
+        } else if (annot.type === 'note') {
+          page.drawRectangle({
+            x: bounds.x,
+            y: bounds.y,
+            width: 22,
+            height: 22,
+            color: annotRgb,
+            opacity: 0.95,
+          });
+          if (annot.text) {
+            await renderTextObjectOntoPage(page, {
+              text: annot.text,
+              bounds: { x: bounds.x + 26, y: bounds.y, width: 200, height: 36 },
+              fontSize: 8.5,
+              color: '#333333',
+              opacity: 0.95,
+            });
+          }
+        }
+      }
+    }
   }
 
-  return await targetPdfDoc.save();
+  const rawSavedBytes = await targetPdfDoc.save();
+  if (protectionConfig && protectionConfig.enabled) {
+    return await applyPdfEncryption(rawSavedBytes, protectionConfig);
+  }
+  return rawSavedBytes;
 }
 
 /**

@@ -184,10 +184,49 @@ export interface ReplacedObjectEntry {
   opacity?: number;
 }
 
+export type AnnotationType =
+  | 'note'
+  | 'highlight'
+  | 'underline'
+  | 'strikeout'
+  | 'text'
+  | 'rect'
+  | 'circle'
+  | 'arrow'
+  | 'pencil';
+
+export interface AnnotationItem {
+  id: string;
+  pageIndex: number;
+  type: AnnotationType;
+  bounds: PDFRect; // in PDF points (x, y from bottom-left)
+  color: string;
+  strokeWidth?: number;
+  opacity?: number;
+  fillColor?: string;
+  text?: string;
+  author?: string;
+  createdAt: number;
+  points?: { x: number; y: number }[]; // For freehand pencil or arrow endpoints
+}
+
+export interface PDFProtectionConfig {
+  enabled: boolean;
+  userPassword?: string;
+  ownerPassword?: string;
+  permissions: {
+    printing: boolean;
+    copying: boolean;
+    modifying: boolean;
+    annotating: boolean;
+  };
+}
+
 export interface PageModifications {
   removedObjectIds: string[];
   replacedObjects: ReplacedObjectEntry[];
   pastedObjects: PDFObject[];
+  annotations?: AnnotationItem[];
 }
 
 export interface DocumentModifications {

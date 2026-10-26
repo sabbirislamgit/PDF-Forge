@@ -4,7 +4,6 @@ import {
   Replace,
   CheckCircle2,
   Crop,
-  Sparkles,
 } from 'lucide-react';
 
 interface EmptyStateProps {
@@ -47,18 +46,14 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         <div className="text-center space-y-3">
           <div className="flex justify-center">
             <img
-              src="./assets/aistudio/Icon_51857bee.png"
-              alt="PDF Object Editor Logo"
+              src="/app-logo.png"
+              alt="Sabbir PDF Editor Logo"
               className="w-20 h-20 object-contain drop-shadow-xl"
             />
           </div>
-          <div className="inline-flex items-center space-x-2 bg-blue-500/10 border border-blue-500/30 px-3 py-1 rounded-full text-blue-400 text-xs font-semibold">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Dedicated PDF Object & Marquee Engine</span>
-          </div>
 
           <h1 className="text-3xl font-extrabold text-white tracking-tight sm:text-4xl">
-            PDF Object Editor
+            Sabbir PDF Editor
           </h1>
           <p className="text-sm text-neutral-400 max-w-lg mx-auto leading-relaxed">
             Upload your PDF to select, crop, copy, and paste objects across pages, or replace and remove recurring objects everywhere.

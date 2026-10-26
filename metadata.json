@@ -1,6 +1,6 @@
 {
-  "name": "PDF Object Editor",
-  "description": "Adobe-inspired web application to copy, paste, move, resize, remove everywhere, and replace objects across PDF pages.",
+  "name": "Sabbir PDF Editor",
+  "description": "Professional desktop PDF editor with full-screen page organizer, native window controls, comments & annotations, and PDF protection.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

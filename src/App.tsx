@@ -17,6 +17,9 @@ import {
   TextSearchMatch,
   PDFRect,
   TextAlign,
+  AnnotationItem,
+  AnnotationType,
+  PDFProtectionConfig,
 } from './types/pdf';
 import {
   extractPageObjects,
@@ -33,14 +36,17 @@ import {
   runOcrOnPages,
   OcrProgressUpdate,
 } from './utils/ocrProcessor';
-import { Header, ToolMode } from './components/Header';
+import { TitleBar, ToolMode } from './components/TitleBar';
+import { AnnotationToolbar } from './components/AnnotationToolbar';
+import { CommentsPanel } from './components/CommentsPanel';
 import { ThumbnailSidebar } from './components/ThumbnailSidebar';
 import { PDFCanvasViewer, TextObjectUpdates } from './components/PDFCanvasViewer';
 import { ObjectInspector } from './components/ObjectInspector';
 import { SameObjectModal, SameObjectModalTab } from './components/SameObjectModal';
 import { AddBlankPageModal } from './components/AddBlankPageModal';
 import { DeletePageModal } from './components/DeletePageModal';
-import { RearrangePagesModal } from './components/RearrangePagesModal';
+import { PageOrganizerModal } from './components/PageOrganizerModal';
+import { PDFProtectionModal } from './components/PDFProtectionModal';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { OcrModal } from './components/OcrModal';
 import { FindReplaceBar } from './components/FindReplaceBar';
@@ -58,6 +64,7 @@ function createEmptyPageMod(): PageModifications {
     removedObjectIds: [],
     replacedObjects: [],
     pastedObjects: [],
+    annotations: [],
   };
 }
 
@@ -82,6 +89,13 @@ function clonePageModifications(mod: PageModifications): PageModifications {
       bounds: { ...r.bounds },
     })),
     pastedObjects: mod.pastedObjects.map(clonePDFObject),
+    annotations: mod.annotations
+      ? mod.annotations.map((a) => ({
+          ...a,
+          bounds: { ...a.bounds },
+          points: a.points ? a.points.map((pt) => ({ ...pt })) : undefined,
+        }))
+      : [],
   };
 }
 
@@ -167,11 +181,35 @@ export default function App() {
   const [isAddBlankPageModalOpen, setIsAddBlankPageModalOpen] = useState<boolean>(false);
   const [deleteTargetPageIndex, setDeleteTargetPageIndex] = useState<number | null>(null);
   const [isRearrangeModalOpen, setIsRearrangeModalOpen] = useState<boolean>(false);
+  const [isOrganizerModalOpen, setIsOrganizerModalOpen] = useState<boolean>(false);
   const [removalToast, setRemovalToast] = useState<{ count: number; pagesCount: number } | null>(null);
   const [pageActionToast, setPageActionToast] = useState<string | null>(null);
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
   const [exportSuccess, setExportSuccess] = useState<boolean>(false);
+
+  // Primary Workflow Mode ('edit' or 'annotate')
+  const [primaryMode, setPrimaryMode] = useState<'edit' | 'annotate'>('edit');
+
+  // Comments & Annotations State
+  const [activeAnnotationType, setActiveAnnotationType] = useState<AnnotationType | null>('note');
+  const [annotationColor, setAnnotationColor] = useState<string>('#f59e0b');
+  const [annotationStrokeWidth, setAnnotationStrokeWidth] = useState<number>(2);
+  const [annotationOpacity, setAnnotationOpacity] = useState<number>(1);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [isCommentsPanelOpen, setIsCommentsPanelOpen] = useState<boolean>(false);
+
+  // PDF Protection State
+  const [isProtectionModalOpen, setIsProtectionModalOpen] = useState<boolean>(false);
+  const [protectionConfig, setProtectionConfig] = useState<PDFProtectionConfig>({
+    enabled: false,
+    permissions: {
+      printing: true,
+      copying: true,
+      modifying: true,
+      annotating: true,
+    },
+  });
 
   // Document Tools State (OCR, Find & Replace, Watermark, Page Numbers, Header & Footer)
   const [isOcrModalOpen, setIsOcrModalOpen] = useState<boolean>(false);
@@ -492,6 +530,14 @@ export default function App() {
             pageIndex: newIdx,
             bounds: { ...p.bounds },
           })),
+          annotations: b.mods.annotations
+            ? b.mods.annotations.map((a) => ({
+                ...a,
+                pageIndex: newIdx,
+                bounds: { ...a.bounds },
+                points: a.points ? a.points.map((pt) => ({ ...pt })) : undefined,
+              }))
+            : [],
         };
 
         nextPages.push(updatedPage);
@@ -499,7 +545,8 @@ export default function App() {
         if (
           updatedMods.removedObjectIds.length > 0 ||
           updatedMods.replacedObjects.length > 0 ||
-          updatedMods.pastedObjects.length > 0
+          updatedMods.pastedObjects.length > 0 ||
+          (updatedMods.annotations && updatedMods.annotations.length > 0)
         ) {
           nextMods[newIdx] = updatedMods;
         }
@@ -718,6 +765,239 @@ export default function App() {
     ]
   );
 
+  // Batch Reorder Pages (Multi-page Drag & Drop)
+  const handleReorderPagesBatch = useCallback(
+    (selectedIndices: number[], targetIndex: number) => {
+      if (selectedIndices.length === 0 || targetIndex < 0 || targetIndex > pages.length) return;
+      const selectedSet = new Set(selectedIndices);
+      const bundles = pages.map((p, idx) => ({
+        page: p,
+        objects: pageObjectsMap.get(idx) || [],
+        mods: modifications[idx] || createEmptyPageMod(),
+      }));
+
+      const movingBundles = bundles.filter((_, idx) => selectedSet.has(idx));
+      const remainingBundles = bundles.filter((_, idx) => !selectedSet.has(idx));
+
+      const itemsBeforeTarget = selectedIndices.filter((idx) => idx < targetIndex).length;
+      const adjustedTarget = Math.max(0, Math.min(remainingBundles.length, targetIndex - itemsBeforeTarget));
+
+      remainingBundles.splice(adjustedTarget, 0, ...movingBundles);
+
+      const { nextPages, nextObjectsMap, nextMods } = rebuildIndexedDocument(remainingBundles);
+      commitDocumentState(nextPages, nextObjectsMap, nextMods, adjustedTarget);
+      setScrollToPageIndex(adjustedTarget);
+      triggerPageToast(`Reordered ${selectedIndices.length} pages`);
+    },
+    [pages, pageObjectsMap, modifications, rebuildIndexedDocument, commitDocumentState, triggerPageToast]
+  );
+
+  // Batch Rotate Pages
+  const handleRotatePagesBatch = useCallback(
+    (direction: 'cw' | 'ccw' | '180', pageIndices: number[]) => {
+      if (pageIndices.length === 0) return;
+      const targetSet = new Set(pageIndices);
+      const delta = direction === 'cw' ? 90 : direction === 'ccw' ? 270 : 180;
+
+      const nextPages = pages.map((p, idx) => {
+        if (!targetSet.has(idx)) return p;
+        const isSwap = direction !== '180';
+        const newW = isSwap ? p.height : p.width;
+        const newH = isSwap ? p.width : p.height;
+        const nextRot = ((p.rotation || 0) + delta) % 360;
+        return {
+          ...p,
+          width: newW,
+          height: newH,
+          rotation: nextRot,
+          thumbnailDataUrl: p.isBlankPage
+            ? createBlankPageThumbnail(newW, newH, p.backgroundColor || '#ffffff')
+            : p.thumbnailDataUrl,
+        };
+      });
+
+      const nextObjectsMap = new Map<number, PDFObject[]>();
+      pageObjectsMap.forEach((objs, pIndex) => {
+        if (!targetSet.has(pIndex)) {
+          nextObjectsMap.set(pIndex, objs);
+        } else {
+          const origPage = pages[pIndex];
+          const oldW = origPage.width;
+          const oldH = origPage.height;
+          nextObjectsMap.set(
+            pIndex,
+            objs.map((o) => {
+              let nextBounds = { ...o.bounds };
+              if (direction === '180') {
+                nextBounds = rotatePdfRect(rotatePdfRect(o.bounds, oldW, oldH, 'cw'), oldH, oldW, 'cw');
+              } else {
+                nextBounds = rotatePdfRect(o.bounds, oldW, oldH, direction);
+              }
+              return {
+                ...o,
+                bounds: nextBounds,
+                rotation: ((o.rotation || 0) + delta) % 360,
+              };
+            })
+          );
+        }
+      });
+
+      const nextMods: DocumentModifications = { ...modifications };
+      for (const idx of pageIndices) {
+        if (!nextMods[idx]) continue;
+        const curMod = nextMods[idx];
+        const origPage = pages[idx];
+        const oldW = origPage.width;
+        const oldH = origPage.height;
+        const rotateRect = (r: PDFRect) =>
+          direction === '180'
+            ? rotatePdfRect(rotatePdfRect(r, oldW, oldH, 'cw'), oldH, oldW, 'cw')
+            : rotatePdfRect(r, oldW, oldH, direction);
+
+        nextMods[idx] = {
+          removedObjectIds: [...curMod.removedObjectIds],
+          replacedObjects: curMod.replacedObjects.map((rep) => ({
+            ...rep,
+            bounds: rotateRect(rep.bounds),
+          })),
+          pastedObjects: curMod.pastedObjects.map((pasted) => ({
+            ...pasted,
+            bounds: rotateRect(pasted.bounds),
+            rotation: ((pasted.rotation || 0) + delta) % 360,
+          })),
+          annotations: curMod.annotations
+            ? curMod.annotations.map((annot) => ({
+                ...annot,
+                bounds: rotateRect(annot.bounds),
+                points: annot.points
+                  ? annot.points.map((pt) => {
+                      const rot = rotateRect({ x: pt.x, y: pt.y, width: 1, height: 1 });
+                      return { x: rot.x, y: rot.y };
+                    })
+                  : undefined,
+              }))
+            : [],
+        };
+      }
+
+      commitDocumentState(nextPages, nextObjectsMap, nextMods, activePageIndex);
+      triggerPageToast(`Rotated ${pageIndices.length} ${pageIndices.length === 1 ? 'page' : 'pages'}`);
+    },
+    [pages, pageObjectsMap, modifications, activePageIndex, commitDocumentState, triggerPageToast]
+  );
+
+  // Batch Duplicate Pages
+  const handleDuplicatePagesBatch = useCallback(
+    (pageIndices: number[]) => {
+      if (pageIndices.length === 0) return;
+      const sorted = [...pageIndices].sort((a, b) => a - b);
+      const bundles = pages.map((p, idx) => ({
+        page: p,
+        objects: pageObjectsMap.get(idx) || [],
+        mods: modifications[idx] || createEmptyPageMod(),
+      }));
+
+      let offset = 0;
+      for (const idx of sorted) {
+        const srcIdx = idx + offset;
+        const srcBundle = bundles[srcIdx];
+        if (!srcBundle) continue;
+
+        const uid = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        const duplicatedPage: PageInfo = {
+          ...clonePageInfo(srcBundle.page),
+          id: `page-dup-${uid}`,
+        };
+
+        const clonedObjects = srcBundle.objects.map((o, oIdx) => ({
+          ...clonePDFObject(o),
+          id: `dup-obj-${uid}-${oIdx}`,
+        }));
+
+        const clonedMods = clonePageModifications(srcBundle.mods);
+
+        bundles.splice(srcIdx + 1, 0, {
+          page: duplicatedPage,
+          objects: clonedObjects,
+          mods: clonedMods,
+        });
+        offset++;
+      }
+
+      const { nextPages, nextObjectsMap, nextMods } = rebuildIndexedDocument(bundles);
+      commitDocumentState(nextPages, nextObjectsMap, nextMods, activePageIndex);
+      triggerPageToast(`Duplicated ${pageIndices.length} ${pageIndices.length === 1 ? 'page' : 'pages'}`);
+    },
+    [pages, pageObjectsMap, modifications, activePageIndex, rebuildIndexedDocument, commitDocumentState, triggerPageToast]
+  );
+
+  // Batch Delete Pages
+  const handleDeletePagesBatch = useCallback(
+    (pageIndices: number[]) => {
+      if (pageIndices.length === 0 || pages.length <= pageIndices.length) return;
+      const deleteSet = new Set(pageIndices);
+      const remainingBundles = pages
+        .map((p, idx) => ({
+          page: p,
+          objects: pageObjectsMap.get(idx) || [],
+          mods: modifications[idx] || createEmptyPageMod(),
+        }))
+        .filter((_, idx) => !deleteSet.has(idx));
+
+      const { nextPages, nextObjectsMap, nextMods } = rebuildIndexedDocument(remainingBundles);
+      const nextActive = Math.max(0, Math.min(nextPages.length - 1, activePageIndex));
+      commitDocumentState(nextPages, nextObjectsMap, nextMods, nextActive);
+      setSelectedObjectId(null);
+      setEditingTextObjectId(null);
+      triggerPageToast(`Deleted ${pageIndices.length} ${pageIndices.length === 1 ? 'page' : 'pages'}`);
+    },
+    [pages, pageObjectsMap, modifications, activePageIndex, rebuildIndexedDocument, commitDocumentState, triggerPageToast]
+  );
+
+  // Insert Blank Page from Organizer
+  const handleInsertBlankPageAt = useCallback(
+    (targetIndex: number, position: 'before' | 'after') => {
+      const refPage = pages[targetIndex] || pages[0];
+      const pageW = refPage?.width || 595.28;
+      const pageH = refPage?.height || 841.89;
+      const insertIdx = position === 'before' ? targetIndex : targetIndex + 1;
+
+      const blankPageInfo: PageInfo = {
+        id: `page-blank-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+        pageIndex: insertIdx,
+        pageNumber: insertIdx + 1,
+        width: pageW,
+        height: pageH,
+        baseWidth: pageW,
+        baseHeight: pageH,
+        originalPageIndex: null,
+        isBlankPage: true,
+        backgroundColor: '#ffffff',
+        rotation: 0,
+        thumbnailDataUrl: createBlankPageThumbnail(pageW, pageH, '#ffffff'),
+      };
+
+      const bundles = pages.map((p, idx) => ({
+        page: p,
+        objects: pageObjectsMap.get(idx) || [],
+        mods: modifications[idx] || createEmptyPageMod(),
+      }));
+
+      bundles.splice(insertIdx, 0, {
+        page: blankPageInfo,
+        objects: [],
+        mods: createEmptyPageMod(),
+      });
+
+      const { nextPages, nextObjectsMap, nextMods } = rebuildIndexedDocument(bundles);
+      commitDocumentState(nextPages, nextObjectsMap, nextMods, insertIdx);
+      setScrollToPageIndex(insertIdx);
+      triggerPageToast(`Inserted blank page at Page ${insertIdx + 1}`);
+    },
+    [pages, pageObjectsMap, modifications, rebuildIndexedDocument, commitDocumentState, triggerPageToast]
+  );
+
   // 5. Rotate Page (Left 90° CCW or Right 90° CW)
   const handleRotatePage = useCallback(
     (direction: 'cw' | 'ccw', targetIdx?: number) => {
@@ -775,6 +1055,23 @@ export default function App() {
             bounds: rotatePdfRect(pasted.bounds, oldW, oldH, direction),
             rotation: ((pasted.rotation || 0) + delta) % 360,
           })),
+          annotations: curMod.annotations
+            ? curMod.annotations.map((annot) => ({
+                ...annot,
+                bounds: rotatePdfRect(annot.bounds, oldW, oldH, direction),
+                points: annot.points
+                  ? annot.points.map((pt) => {
+                      const rotated = rotatePdfRect(
+                        { x: pt.x, y: pt.y, width: 1, height: 1 },
+                        oldW,
+                        oldH,
+                        direction
+                      );
+                      return { x: rotated.x, y: rotated.y };
+                    })
+                  : undefined,
+              }))
+            : [],
         };
       }
 
@@ -1405,6 +1702,129 @@ export default function App() {
     },
     [modifications, activePageIndex, pageObjectsMap, pushHistory]
   );
+
+  // ================= COMMENTS & ANNOTATIONS HANDLERS =================
+  const allAnnotations = useMemo(() => {
+    const list: AnnotationItem[] = [];
+    for (const key of Object.keys(modifications)) {
+      const pIdx = Number(key);
+      const annots = modifications[pIdx]?.annotations || [];
+      list.push(...annots);
+    }
+    return list;
+  }, [modifications]);
+
+  const handleAddAnnotation = useCallback(
+    (annot: AnnotationItem, pageIndex: number) => {
+      const currentMods = { ...modifications };
+      const pageMods = currentMods[pageIndex]
+        ? clonePageModifications(currentMods[pageIndex])
+        : createEmptyPageMod();
+
+      pageMods.annotations = [...(pageMods.annotations || []), annot];
+      currentMods[pageIndex] = pageMods;
+      pushHistory(currentMods);
+      setSelectedAnnotationId(annot.id);
+    },
+    [modifications, pushHistory]
+  );
+
+  const handleUpdateAnnotation = useCallback(
+    (annot: AnnotationItem, pageIndex: number) => {
+      const currentMods = { ...modifications };
+      const pageMods = currentMods[pageIndex]
+        ? clonePageModifications(currentMods[pageIndex])
+        : createEmptyPageMod();
+
+      pageMods.annotations = (pageMods.annotations || []).map((a) =>
+        a.id === annot.id ? { ...annot } : a
+      );
+      currentMods[pageIndex] = pageMods;
+      pushHistory(currentMods);
+    },
+    [modifications, pushHistory]
+  );
+
+  const handleDeleteAnnotation = useCallback(
+    (annotId: string, pageIndex?: number) => {
+      const currentMods = { ...modifications };
+      let found = false;
+
+      const targetPages =
+        pageIndex !== undefined ? [pageIndex] : Object.keys(currentMods).map(Number);
+      for (const pIdx of targetPages) {
+        const pMod = currentMods[pIdx];
+        if (!pMod || !pMod.annotations) continue;
+        const filtered = pMod.annotations.filter((a) => a.id !== annotId);
+        if (filtered.length !== pMod.annotations.length) {
+          found = true;
+          currentMods[pIdx] = {
+            ...clonePageModifications(pMod),
+            annotations: filtered,
+          };
+        }
+      }
+
+      if (found) {
+        pushHistory(currentMods);
+        if (selectedAnnotationId === annotId) {
+          setSelectedAnnotationId(null);
+        }
+        triggerPageToast('Deleted annotation');
+      }
+    },
+    [modifications, pushHistory, selectedAnnotationId, triggerPageToast]
+  );
+
+  const handleUpdateAnnotationText = useCallback(
+    (id: string, text: string) => {
+      const currentMods = { ...modifications };
+      let found = false;
+      for (const key of Object.keys(currentMods)) {
+        const pIdx = Number(key);
+        const pMod = currentMods[pIdx];
+        if (!pMod || !pMod.annotations) continue;
+        const updated = pMod.annotations.map((a) => (a.id === id ? { ...a, text } : a));
+        if (updated !== pMod.annotations) {
+          found = true;
+          currentMods[pIdx] = {
+            ...clonePageModifications(pMod),
+            annotations: updated,
+          };
+        }
+      }
+      if (found) {
+        pushHistory(currentMods);
+      }
+    },
+    [modifications, pushHistory]
+  );
+
+  // ================= PDF PROTECTION HANDLERS =================
+  const handleSaveProtectionConfig = useCallback(
+    (cfg: PDFProtectionConfig) => {
+      setProtectionConfig(cfg);
+      triggerPageToast(
+        cfg.enabled
+          ? 'Configured PDF Protection (AES encryption with passwords)'
+          : 'PDF Protection disabled'
+      );
+    },
+    [triggerPageToast]
+  );
+
+  const handleRemoveProtection = useCallback(() => {
+    setProtectionConfig({
+      enabled: false,
+      permissions: {
+        printing: true,
+        copying: true,
+        modifying: true,
+        annotating: true,
+      },
+    });
+    triggerPageToast('Removed PDF protection');
+  }, [triggerPageToast]);
 
   // ================= SAME OBJECT WORKFLOW (FIND / HIGHLIGHT / REMOVE / REPLACE) =================
   const runObjectLevelMatching = useCallback(
@@ -2339,13 +2759,17 @@ export default function App() {
         pdfBytes.slice(),
         modifications,
         allOriginalObjectsMap,
-        pages
+        pages,
+        protectionConfig
       );
       const downloadName = filename
-        ? filename.replace(/\.pdf$/i, '_edited.pdf')
-        : 'document_edited.pdf';
+        ? filename.replace(/\.pdf$/i, protectionConfig.enabled ? '_protected.pdf' : '_edited.pdf')
+        : (protectionConfig.enabled ? 'document_protected.pdf' : 'document_edited.pdf');
       downloadPdf(modifiedBytes, downloadName);
       setExportSuccess(true);
+      if (protectionConfig.enabled) {
+        triggerPageToast('Saved and encrypted PDF with password protection');
+      }
       setTimeout(() => setExportSuccess(false), 3000);
     } catch {
       setErrorToast('Failed to export edited PDF. Please try again.');
@@ -2483,8 +2907,8 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#141414] text-neutral-200 overflow-hidden font-sans">
-      {/* Top Application Bar */}
-      <Header
+      {/* Unified Professional Desktop Window Bar & Toolbar */}
+      <TitleBar
         filename={filename}
         pageCount={pages.length}
         currentPage={activePageIndex + 1}
@@ -2496,11 +2920,16 @@ export default function App() {
         hasModifications={hasModifications}
         hasSelectedObject={!!selectedObject}
         matchCount={matches.length}
-        checkedMatchCount={checkedMatches.length}
-        isHighlightMatchesActive={isHighlightMatchesActive}
         isProcessing={isProcessing}
+        isProtected={protectionConfig.enabled}
         isFindReplaceOpen={isFindReplaceOpen}
         scannedPageCount={scannedPageIndices.length}
+        primaryMode={primaryMode}
+        isSidebarOpen={isSidebarOpen}
+        isInspectorOpen={isInspectorOpen}
+        onChangePrimaryMode={setPrimaryMode}
+        onOpenProtection={() => setIsProtectionModalOpen(true)}
+        onOpenPageOrganizer={() => setIsOrganizerModalOpen(true)}
         onToolChange={setActiveTool}
         onViewModeChange={handleViewModeChange}
         onUndo={handleUndo}
@@ -2516,16 +2945,13 @@ export default function App() {
         }}
         onFindSameObject={() => handleFindEverywhere()}
         onHighlightSameObjectMatches={() => handleHighlightSameObjectMatches()}
-        onRemoveSameObject={handleStartRemoveEverywhere}
         onReplaceSameObject={handleOpenReplaceSameObject}
-        onRemoveEverywhere={handleStartRemoveEverywhere}
         onFileSelected={handleFileSelected}
         onExport={handleExportPdf}
         onOpenShortcuts={() => setIsShortcutsOpen(true)}
         onOpenAddBlankPage={() => setIsAddBlankPageModalOpen(true)}
         onDuplicatePage={() => handleDuplicatePage(activePageIndex)}
         onOpenDeletePage={() => setDeleteTargetPageIndex(activePageIndex)}
-        onOpenRearrangePages={() => setIsRearrangeModalOpen(true)}
         onRotatePageLeft={() => handleRotatePage('ccw', activePageIndex)}
         onRotatePageRight={() => handleRotatePage('cw', activePageIndex)}
         onOpenOcrModal={() => setIsOcrModalOpen(true)}
@@ -2533,7 +2959,6 @@ export default function App() {
         onOpenWatermarkModal={() => setIsWatermarkModalOpen(true)}
         onOpenPageNumberModal={() => setIsPageNumberModalOpen(true)}
         onOpenHeaderFooterModal={() => setIsHeaderFooterModalOpen(true)}
-        isSidebarOpen={isSidebarOpen}
         onToggleSidebar={() => {
           setIsSidebarOpen((prev) => {
             const next = !prev;
@@ -2543,7 +2968,6 @@ export default function App() {
             return next;
           });
         }}
-        isInspectorOpen={isInspectorOpen}
         onToggleInspector={() => {
           setIsInspectorOpen((prev) => {
             const next = !prev;
@@ -2554,6 +2978,23 @@ export default function App() {
           });
         }}
       />
+
+      {/* Secondary Markup & Annotations Toolbar */}
+      {filename && primaryMode === 'annotate' && (
+        <AnnotationToolbar
+          activeAnnotationType={activeAnnotationType}
+          onSelectAnnotationType={setActiveAnnotationType}
+          currentColor={annotationColor}
+          onChangeColor={setAnnotationColor}
+          strokeWidth={annotationStrokeWidth}
+          onChangeStrokeWidth={setAnnotationStrokeWidth}
+          opacity={annotationOpacity}
+          onChangeOpacity={setAnnotationOpacity}
+          commentsCount={allAnnotations.length}
+          isCommentsPanelOpen={isCommentsPanelOpen}
+          onToggleCommentsPanel={() => setIsCommentsPanelOpen((prev) => !prev)}
+        />
+      )}
 
       {/* Floating Find & Replace Bar */}
       <FindReplaceBar
@@ -2640,6 +3081,30 @@ export default function App() {
             onPasteObject={handlePasteObject}
             onClearClipboard={handleClearClipboard}
             onContainerResize={handleContainerResize}
+            primaryMode={primaryMode}
+            activeAnnotationType={activeAnnotationType}
+            annotationColor={annotationColor}
+            annotationStrokeWidth={annotationStrokeWidth}
+            annotationOpacity={annotationOpacity}
+            selectedAnnotationId={selectedAnnotationId}
+            onSelectAnnotation={setSelectedAnnotationId}
+            onAddAnnotation={handleAddAnnotation}
+            onUpdateAnnotation={handleUpdateAnnotation}
+            onDeleteAnnotation={handleDeleteAnnotation}
+          />
+
+          {/* Right: Comments & Notes Drawer */}
+          <CommentsPanel
+            isOpen={isCommentsPanelOpen}
+            onClose={() => setIsCommentsPanelOpen(false)}
+            annotations={allAnnotations}
+            onSelectAnnotation={(annot) => {
+              setActivePageIndex(annot.pageIndex);
+              setScrollToPageIndex(annot.pageIndex);
+              setSelectedAnnotationId(annot.id);
+            }}
+            onUpdateAnnotationText={handleUpdateAnnotationText}
+            onDeleteAnnotation={handleDeleteAnnotation}
           />
 
           {/* Right: Object Inspector */}
@@ -2787,17 +3252,34 @@ export default function App() {
         onConfirmDelete={handleConfirmDeletePage}
       />
 
-      {/* Rearrange Pages Grid Modal */}
-      <RearrangePagesModal
-        isOpen={isRearrangeModalOpen}
+      {/* Full-Screen Page Organizer Workspace */}
+      <PageOrganizerModal
+        isOpen={isOrganizerModalOpen || isRearrangeModalOpen}
         pages={pages}
         activePageIndex={activePageIndex}
-        onClose={() => setIsRearrangeModalOpen(false)}
-        onReorderPages={handleReorderPages}
+        onClose={() => {
+          setIsOrganizerModalOpen(false);
+          setIsRearrangeModalOpen(false);
+        }}
         onSelectPage={(idx) => {
           setActivePageIndex(idx);
           setScrollToPageIndex(idx);
         }}
+        onReorderPages={handleReorderPages}
+        onReorderPagesBatch={handleReorderPagesBatch}
+        onRotatePages={handleRotatePagesBatch}
+        onDuplicatePages={handleDuplicatePagesBatch}
+        onDeletePages={handleDeletePagesBatch}
+        onInsertBlankPage={handleInsertBlankPageAt}
+      />
+
+      {/* PDF Protection Modal */}
+      <PDFProtectionModal
+        isOpen={isProtectionModalOpen}
+        onClose={() => setIsProtectionModalOpen(false)}
+        config={protectionConfig}
+        onSaveConfig={handleSaveProtectionConfig}
+        onRemoveProtection={handleRemoveProtection}
       />
 
       {/* Error Toast Notification */}

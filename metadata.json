@@ -1,0 +1,6 @@
+{
+  "name": "PDF Object Editor",
+  "description": "Adobe-inspired web application to copy, paste, move, resize, remove everywhere, and replace objects across PDF pages.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,106 @@
+@import "tailwindcss";
+
+/* Unicode Bengali Web Fonts with local + CDN + Google Fonts fallbacks */
+@font-face {
+  font-family: 'SolaimanLipi';
+  src: local('SolaimanLipi'), local('SolaimanLipi Normal'),
+       url('https://cdn.jsdelivr.net/gh/atik-ulla/bangla-web-fonts@main/SolaimanLipi/SolaimanLipi.woff2') format('woff2'),
+       url('https://fonts.maateen.me/solaiman-lipi/font.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Kalpurush';
+  src: local('Kalpurush'),
+       url('https://cdn.jsdelivr.net/gh/atik-ulla/bangla-web-fonts@main/Kalpurush/Kalpurush.woff2') format('woff2'),
+       url('https://fonts.maateen.me/kalpurush/font.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nikosh';
+  src: local('Nikosh'), local('NikoshBAN'),
+       url('https://cdn.jsdelivr.net/gh/atik-ulla/bangla-web-fonts@main/Nikosh/Nikosh.woff2') format('woff2'),
+       url('https://fonts.maateen.me/nikosh/font.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Siyam Rupali';
+  src: local('Siyam Rupali'), local('SiyamRupali'),
+       url('https://cdn.jsdelivr.net/gh/atik-ulla/bangla-web-fonts@main/SiyamRupali/SiyamRupali.woff2') format('woff2'),
+       url('https://fonts.maateen.me/siyam-rupali/font.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    --bg-dark-base: #141414;
+    --bg-dark-surface: #1e1e1e;
+    --bg-dark-elevated: #282828;
+    --bg-dark-hover: #323232;
+    --border-dark: #383838;
+    --adobe-blue: #1473e6;
+    --adobe-blue-hover: #0d66d0;
+    --adobe-cyan: #00c4cc;
+  }
+
+  body {
+    background-color: var(--bg-dark-base);
+    color: #e2e8f0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Noto Sans Bengali", "SolaimanLipi", "Kalpurush", sans-serif;
+    user-select: none;
+    overflow: hidden;
+  }
+}
+
+/* Custom sleek scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #181818;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555555;
+}
+
+/* Canvas Drop Shadow */
+.pdf-shadow {
+  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+/* Pulsing highlight for matched objects across the PDF */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(20, 115, 230, 0.8), inset 0 0 10px rgba(20, 115, 230, 0.3);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(20, 115, 230, 0), inset 0 0 14px rgba(20, 115, 230, 0.5);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(20, 115, 230, 0), inset 0 0 10px rgba(20, 115, 230, 0.3);
+  }
+}
+
+.match-highlight {
+  animation: pulse-ring 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
+  outline: 2px solid #00c4cc !important;
+  background-color: rgba(0, 196, 204, 0.15) !important;
+}

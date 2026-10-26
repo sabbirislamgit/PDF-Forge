@@ -116,6 +116,27 @@ npm run preview
 
 ---
 
+## Tauri Desktop Application
+
+**PDF Object Editor** includes a complete **Tauri v2** desktop configuration (`src-tauri/`) for building native installers across Windows (`.exe` NSIS / `.msi` WiX), macOS (`.dmg` / `.app`), and Linux (`.deb` / `.AppImage`).
+
+### Prerequisites for Desktop Builds
+- [Rust Toolchain](https://www.rust-lang.org/tools/install) (`rustc >= 1.77.2`, `cargo`)
+- Platform-specific Tauri system dependencies ([Tauri v2 Prerequisites Guide](https://v2.tauri.app/start/prerequisites/))
+
+### Start Desktop App in Development Mode
+```bash
+npm run tauri dev
+```
+
+### Build Production Desktop Installers
+```bash
+npm run tauri build
+```
+Compiled native installers are output to `src-tauri/target/release/bundle/`.
+
+---
+
 ## Deployment
 
 Because **PDF Object Editor** is a 100% client-side Single Page Application (SPA) configured with relative asset paths (`base: './'`), it deploys out-of-the-box to any static hosting provider.

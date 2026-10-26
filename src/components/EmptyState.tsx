@@ -45,6 +45,13 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       <div className="max-w-2xl w-full space-y-8 my-auto animate-in fade-in duration-300">
         {/* App Title & Intro */}
         <div className="text-center space-y-3">
+          <div className="flex justify-center">
+            <img
+              src="./assets/aistudio/Icon_51857bee.png"
+              alt="PDF Object Editor Logo"
+              className="w-20 h-20 object-contain drop-shadow-xl"
+            />
+          </div>
           <div className="inline-flex items-center space-x-2 bg-blue-500/10 border border-blue-500/30 px-3 py-1 rounded-full text-blue-400 text-xs font-semibold">
             <Sparkles className="w-3.5 h-3.5" />
             <span>Dedicated PDF Object & Marquee Engine</span>

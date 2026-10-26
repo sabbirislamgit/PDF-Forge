@@ -212,10 +212,12 @@ const HeaderComponent: React.FC<HeaderProps> = ({
         )}
 
         <div className="flex items-center space-x-2 min-w-0">
-          {/* Adobe-Style App Logo Badge */}
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#0265dc] to-[#014294] flex items-center justify-center shadow-md shadow-blue-950/60 border border-blue-400/30 shrink-0">
-            <span className="text-white font-extrabold text-sm tracking-tight">PO</span>
-          </div>
+          {/* Custom App Logo Badge */}
+          <img
+            src="./assets/aistudio/Icon_51857bee.png"
+            alt="PDF Object Editor"
+            className="w-8 h-8 object-contain drop-shadow-md shrink-0"
+          />
           <div className="min-w-0">
             <div className="flex items-center space-x-1.5">
               <span className="font-semibold text-white text-xs sm:text-sm tracking-tight truncate">

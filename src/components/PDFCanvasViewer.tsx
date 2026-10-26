@@ -350,11 +350,8 @@ const PageItemComponent: React.FC<PageItemProps> = ({
         if (!cancelRender) {
           setRenderReady(true);
         }
-      } catch (err: unknown) {
-        const errorName = (err as { name?: string })?.name;
-        if (errorName !== 'RenderingCancelledException') {
-          console.warn(`PDF page ${pageInfo.pageNumber} rendering error:`, err);
-        }
+      } catch {
+        // Ignore cancelled or interrupted page render tasks
       }
     }
 
@@ -1350,6 +1347,18 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
   const isProgrammaticScrolling = useRef<boolean>(false);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resizeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showTimedNotification = useCallback((message: string, durationMs = 3000) => {
+    setCopiedNotification(message);
+    if (notificationTimeoutRef.current) {
+      clearTimeout(notificationTimeoutRef.current);
+    }
+    notificationTimeoutRef.current = setTimeout(() => {
+      setCopiedNotification(null);
+      notificationTimeoutRef.current = null;
+    }, durationMs);
+  }, []);
 
   // Precalculate exact vertical offsets for every page in continuous mode (O(N) memoized)
   const pageLayoutOffsets = useMemo(() => {
@@ -1486,6 +1495,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
       if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
       if (cropRafRef.current !== null) cancelAnimationFrame(cropRafRef.current);
       if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+      if (notificationTimeoutRef.current) clearTimeout(notificationTimeoutRef.current);
     };
   }, []);
 
@@ -1639,8 +1649,8 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
           if (highRes) {
             imageDataUrl = highRes;
           }
-        } catch (err) {
-          console.warn('High-res render fallback:', err);
+        } catch {
+          // Use synchronous canvas crop fallback if high-res extraction fails
         }
       }
 
@@ -1675,12 +1685,12 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
         onCopyObject(croppedObj);
       }
 
-      setCopiedNotification(
-        'Cropped area converted into an editable object (Move, Resize, Rotate, Copy, Delete).'
+      showTimedNotification(
+        'Cropped area converted into an editable object (Move, Resize, Rotate, Copy, Delete).',
+        3200
       );
-      setTimeout(() => setCopiedNotification(null), 3200);
     },
-    [extractCroppedPDFObject, onCreateCroppedObject, onCopyObject]
+    [extractCroppedPDFObject, onCreateCroppedObject, onCopyObject, showTimedNotification]
   );
 
   const handleCopyCroppedArea = useCallback(
@@ -1691,12 +1701,12 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
       onCopyObject(croppedObj);
       setCropMarquee(null);
       setCropPageIndex(null);
-      setCopiedNotification(
-        'Selected area copied in original 300 DPI resolution with transparency preserved.'
+      showTimedNotification(
+        'Selected area copied in original 300 DPI resolution with transparency preserved.',
+        3000
       );
-      setTimeout(() => setCopiedNotification(null), 3000);
     },
-    [extractCroppedPDFObject, onCopyObject]
+    [extractCroppedPDFObject, onCopyObject, showTimedNotification]
   );
 
   // ================= OBJECT DRAG, RESIZE & ROTATE LOGIC =================
@@ -1996,10 +2006,9 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
     (e: React.MouseEvent, obj: PDFObject) => {
       e.stopPropagation();
       onCopyObject(obj);
-      setCopiedNotification('Object copied to clipboard! Unlimited pastes available.');
-      setTimeout(() => setCopiedNotification(null), 2500);
+      showTimedNotification('Object copied to clipboard! Unlimited pastes available.', 2500);
     },
-    [onCopyObject]
+    [onCopyObject, showTimedNotification]
   );
 
   if (pages.length === 0) {

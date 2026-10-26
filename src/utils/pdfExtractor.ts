@@ -180,6 +180,8 @@ export function computeCanvasPerceptualHash(
     ctx.drawImage(sourceCanvas, canvasX, canvasY, canvasW, canvasH, 0, 0, 9, 8);
 
     const data = ctx.getImageData(0, 0, 9, 8).data;
+    sampleCanvas.width = 0;
+    sampleCanvas.height = 0;
     const gray: number[] = [];
     let sumR = 0;
     let sumG = 0;
@@ -373,12 +375,15 @@ export async function extractPageRegionHighRes(
       viewport: viewport,
       canvas: offscreen,
     }).promise;
-  } catch (err) {
-    console.warn('High-res render error:', err);
+  } catch {
+    // Ignore cancelled or partial high-res render errors
   }
 
   ctx.restore();
-  return offscreen.toDataURL('image/png');
+  const dataUrl = offscreen.toDataURL('image/png');
+  offscreen.width = 0;
+  offscreen.height = 0;
+  return dataUrl;
 }
 
 /**
@@ -420,7 +425,10 @@ export function extractCanvasRegionDataUrl(
     canvasH
   );
 
-  return offscreen.toDataURL('image/png');
+  const dataUrl = offscreen.toDataURL('image/png');
+  offscreen.width = 0;
+  offscreen.height = 0;
+  return dataUrl;
 }
 
 interface PdfJsTextItem {
@@ -607,8 +615,8 @@ export async function extractPageObjects(
       lastEndX = x + width;
     }
     flushLine();
-  } catch (err) {
-    console.warn(`Text extraction error on page ${pageIndex + 1}:`, err);
+  } catch {
+    // Ignore text extraction errors on malformed font tables
   }
 
   // 2. EXTRACT IMAGE & VECTOR OBJECTS VIA OPERATOR LIST
@@ -891,8 +899,8 @@ export async function extractPageObjects(
         label: `Vector Graphic (${Math.round(width)}×${Math.round(height)}pt)`,
       });
     }
-  } catch (err) {
-    console.warn(`Image/Vector operator extraction error on page ${pageIndex + 1}:`, err);
+  } catch {
+    // Ignore operator list extraction errors on malformed streams
   }
 
   // Generate crisp thumbnail directly from the PDF page preserving exact aspect ratio
@@ -917,8 +925,10 @@ export async function extractPageObjects(
       }).promise;
       thumbnailDataUrl = thumbCanvas.toDataURL('image/png');
     }
-  } catch (e) {
-    console.warn('Direct PDF thumbnail generation error:', e);
+    thumbCanvas.width = 0;
+    thumbCanvas.height = 0;
+  } catch {
+    // Ignore thumbnail generation errors
   }
 
   const pageInfo: PageInfo = {
@@ -974,7 +984,10 @@ export function createBlankPageThumbnail(
       ctx.fillRect(0, 0, thumbWidth, thumbHeight);
     }
 
-    return canvas.toDataURL('image/png');
+    const dataUrl = canvas.toDataURL('image/png');
+    canvas.width = 0;
+    canvas.height = 0;
+    return dataUrl;
   } catch {
     return '';
   }

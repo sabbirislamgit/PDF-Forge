@@ -1,11 +1,9 @@
 import React, { useRef } from 'react';
 import {
   FileUp,
-  Copy,
   Replace,
   CheckCircle2,
   Crop,
-  Layers,
   Sparkles,
 } from 'lucide-react';
 
@@ -23,7 +21,10 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
-    if (file && file.type === 'application/pdf') {
+    if (
+      file &&
+      (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+    ) {
       onFileSelected(file);
     }
   };
@@ -37,7 +38,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           const file = e.target.files?.[0];
           if (file) onFileSelected(file);
         }}
-        accept="application/pdf"
+        accept="application/pdf,.pdf"
         className="hidden"
       />
 
@@ -59,10 +60,19 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 
         {/* Drag & Drop Main Zone */}
         <div
+          role="button"
+          tabIndex={0}
+          aria-label="Upload PDF document by dragging and dropping or clicking to browse"
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
-          className="border-2 border-dashed border-[#383838] hover:border-[#0265dc] bg-[#1c1c1e] hover:bg-[#202024] rounded-2xl p-10 sm:p-12 text-center cursor-pointer transition group shadow-2xl flex flex-col items-center justify-center space-y-4"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              fileInputRef.current?.click();
+            }
+          }}
+          className="border-2 border-dashed border-[#383838] hover:border-[#0265dc] focus:border-[#0265dc] focus:outline-none bg-[#1c1c1e] hover:bg-[#202024] rounded-2xl p-10 sm:p-12 text-center cursor-pointer transition group shadow-2xl flex flex-col items-center justify-center space-y-4"
         >
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600/20 to-cyan-500/20 border border-blue-500/30 flex items-center justify-center text-blue-400 group-hover:scale-110 group-hover:text-cyan-300 transition-all shadow-inner">
             <FileUp className="w-8 h-8" />

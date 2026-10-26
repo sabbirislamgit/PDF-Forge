@@ -25,6 +25,9 @@ export const DeletePageModal: React.FC<DeletePageModalProps> = ({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Delete Page Confirmation"
       className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 select-none animate-in fade-in duration-150"
       onClick={onClose}
     >

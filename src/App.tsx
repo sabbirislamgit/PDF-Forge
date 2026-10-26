@@ -48,7 +48,7 @@ import { WatermarkModal } from './components/WatermarkModal';
 import { PageNumberModal, formatPageNumberString } from './components/PageNumberModal';
 import { HeaderFooterModal, resolveHeaderFooterTemplate } from './components/HeaderFooterModal';
 import { EmptyState } from './components/EmptyState';
-import { Trash2, Undo2, X, Sparkles, Check, AlertTriangle } from 'lucide-react';
+import { Trash2, Undo2, X, Check, AlertTriangle } from 'lucide-react';
 
 const MAX_HISTORY_STEPS = 50;
 
@@ -167,7 +167,6 @@ export default function App() {
   const [isAddBlankPageModalOpen, setIsAddBlankPageModalOpen] = useState<boolean>(false);
   const [deleteTargetPageIndex, setDeleteTargetPageIndex] = useState<number | null>(null);
   const [isRearrangeModalOpen, setIsRearrangeModalOpen] = useState<boolean>(false);
-  const [isSearchingMatches, setIsSearchingMatches] = useState<boolean>(false);
   const [removalToast, setRemovalToast] = useState<{ count: number; pagesCount: number } | null>(null);
   const [pageActionToast, setPageActionToast] = useState<string | null>(null);
   const [errorToast, setErrorToast] = useState<string | null>(null);
@@ -219,6 +218,25 @@ export default function App() {
     };
     window.addEventListener('resize', handleBreakpointResize);
     return () => window.removeEventListener('resize', handleBreakpointResize);
+  }, []);
+
+  // Release PDF document proxy and render caches on unmount
+  const pdfDocProxyRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
+  useEffect(() => {
+    pdfDocProxyRef.current = pdfDocProxy;
+  }, [pdfDocProxy]);
+
+  useEffect(() => {
+    return () => {
+      clearPdfRenderCaches();
+      if (pdfDocProxyRef.current) {
+        try {
+          pdfDocProxyRef.current.cleanup();
+        } catch {
+          // ignore
+        }
+      }
+    };
   }, []);
 
   // Flat map of all original objects across entire document for fast lookup
@@ -885,7 +903,6 @@ export default function App() {
         setIsFitWidthActive(true);
       }
     } catch (err: unknown) {
-      console.error('Failed to load PDF:', err);
       const msg =
         err instanceof Error && err.message
           ? err.message
@@ -1004,8 +1021,8 @@ export default function App() {
               });
             }
           }
-        } catch (e) {
-          console.warn('High-res copy extraction fallback:', e);
+        } catch {
+          // Fall back to synchronous canvas copy if high-res extraction fails
         }
       }
     },
@@ -1708,8 +1725,7 @@ export default function App() {
           setIsOcrModalOpen(false);
           triggerPageToast('No recognizable text found on the selected page(s)');
         }
-      } catch (err) {
-        console.error('OCR error:', err);
+      } catch {
         setErrorToast('OCR failed to process the page. Please try again.');
       } finally {
         setIsRunningOcr(false);
@@ -2331,8 +2347,7 @@ export default function App() {
       downloadPdf(modifiedBytes, downloadName);
       setExportSuccess(true);
       setTimeout(() => setExportSuccess(false), 3000);
-    } catch (e: unknown) {
-      console.error('Export error:', e);
+    } catch {
       setErrorToast('Failed to export edited PDF. Please try again.');
     } finally {
       setIsProcessing(false);
@@ -2870,27 +2885,6 @@ export default function App() {
           >
             <X className="w-3.5 h-3.5" />
           </button>
-        </div>
-      )}
-
-      {/* Searching Across PDF Progress Overlay */}
-      {isSearchingMatches && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex flex-col items-center justify-center p-6 select-none animate-in fade-in duration-150">
-          <div className="bg-[#1e1e1e] border border-cyan-600/50 p-6 rounded-2xl shadow-2xl flex flex-col items-center space-y-4 max-w-sm text-center">
-            <div className="relative flex items-center justify-center">
-              <div className="w-12 h-12 border-3 border-cyan-500/20 rounded-full" />
-              <div className="w-12 h-12 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin absolute" />
-            </div>
-            <div className="space-y-1">
-              <h3 className="text-sm font-bold text-white tracking-wide flex items-center justify-center space-x-1.5">
-                <Sparkles className="w-4 h-4 text-cyan-400 animate-pulse" />
-                <span>Searching Across Document</span>
-              </h3>
-              <p className="text-xs text-neutral-400">
-                Finding identical or visually matching objects across all pages...
-              </p>
-            </div>
-          </div>
         </div>
       )}
 

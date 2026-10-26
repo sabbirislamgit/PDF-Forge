@@ -358,7 +358,10 @@ async function renderRichTextToHighResPng(
     }
   }
 
-  return canvas.toDataURL('image/png');
+  const dataUrl = canvas.toDataURL('image/png');
+  canvas.width = 0;
+  canvas.height = 0;
+  return dataUrl;
 }
 
 /**
@@ -582,8 +585,8 @@ export async function applyModificationsAndExport(
             textOpts.opacity ?? 1
           );
           return;
-        } catch (err) {
-          console.warn('Shaped high-res text embed fallback:', err);
+        } catch {
+          // Fall back to standard vector font rendering if PNG embed fails
         }
       }
     }
@@ -653,8 +656,8 @@ export async function applyModificationsAndExport(
         try {
           const img = await getOrEmbedImage(replaced.replacement.imageDataUrl);
           drawImageWithCenterRotation(page, img, bounds, repRotation, repOpacity);
-        } catch (e) {
-          console.error('Failed to embed replacement image:', e);
+        } catch {
+          // Skip invalid replacement image data
         }
       } else if (replaced.replacement.type === 'text' && replaced.replacement.text) {
         await renderTextObjectOntoPage(page, {
@@ -701,8 +704,8 @@ export async function applyModificationsAndExport(
             pasted.rotation,
             pasted.opacity ?? 1
           );
-        } catch (e) {
-          console.error('Failed to embed pasted image:', e);
+        } catch {
+          // Skip invalid pasted image data
         }
       } else if (pasted.type === 'text' && pasted.text) {
         await renderTextObjectOntoPage(page, {
@@ -731,7 +734,7 @@ export async function applyModificationsAndExport(
  * Initiates browser download of a PDF binary.
  */
 export function downloadPdf(bytes: Uint8Array, filename = 'document_edited.pdf'): void {
-  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+  const blob = new Blob([new Uint8Array(bytes)], { type: 'application/pdf' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

@@ -293,7 +293,11 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
 
         fillPageBackground(bCtx, pixelW, pixelH, page.backgroundColor);
         await drawModificationsOverlay(bCtx, pixelW / safePageWidth);
-        if (cancelled) return;
+        if (cancelled) {
+          buffer.width = 0;
+          buffer.height = 0;
+          return;
+        }
 
         canvas.width = pixelW;
         canvas.height = pixelH;
@@ -302,6 +306,8 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
           ctx.drawImage(buffer, 0, 0, pixelW, pixelH);
           setHasRenderedDirect(true);
         }
+        buffer.width = 0;
+        buffer.height = 0;
         return;
       }
 
@@ -331,6 +337,8 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
               setHasRenderedDirect(true);
             }
           }
+          buffer.width = 0;
+          buffer.height = 0;
           return;
         }
       }

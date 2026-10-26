@@ -74,6 +74,9 @@ export const RearrangePagesModal: React.FC<RearrangePagesModalProps> = ({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Rearrange Pages"
       className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-6 select-none animate-in fade-in duration-150"
       onClick={onClose}
     >

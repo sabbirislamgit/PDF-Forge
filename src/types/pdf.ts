@@ -35,7 +35,7 @@ export interface ObjectSignature {
   fontStyle?: FontStyle;
   color?: string;
   pdfObjectId?: string;
-  layerType?: 'watermark' | 'page-number' | 'header-footer' | 'ocr';
+  layerType?: 'watermark' | 'page-number' | 'header-footer' | 'ocr' | 'drawing' | 'added-text' | 'added-image';
 }
 
 export interface PDFObject {
@@ -62,12 +62,15 @@ export interface PDFObject {
   letterSpacing?: number; // px spacing
   lineHeight?: number; // line height multiplier (e.g. 1.25)
   color?: string; // hex color e.g. '#111827'
+  // For freehand drawings
+  strokeColor?: string;
+  strokeWidth?: number;
   // Sampled local background behind original object for seamless cover-up
   backgroundColor?: string;
   // Attributes
   rotation?: number; // degrees (-180..360)
   opacity?: number; // 0..1 (default 1)
-  layerType?: 'watermark' | 'page-number' | 'header-footer' | 'ocr';
+  layerType?: 'watermark' | 'page-number' | 'header-footer' | 'ocr' | 'drawing' | 'added-text' | 'added-image';
   forceBackgroundCover?: boolean; // when true on a new object (e.g. OCR), draws backgroundColor cover rect over underlying raster text
   isNew?: boolean; // newly pasted, moved, resized, or edited object
   sourceObjectId?: string; // ID of original PDF object if derived from one

@@ -42,12 +42,12 @@ interface ThumbnailSidebarProps {
   onRotatePageRight?: (index: number) => void;
 }
 
-interface PageThumbnailPreviewProps {
+export interface PageThumbnailPreviewProps {
   pdfDocProxy?: pdfjsLib.PDFDocumentProxy | null;
   page: PageInfo;
   pageObjects: PDFObject[];
   pageMods?: PageModifications;
-  scrollRootRef: React.RefObject<HTMLDivElement | null>;
+  scrollRootRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 /**
@@ -63,7 +63,7 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isVisible, setIsVisible] = useState<boolean>(page.pageIndex < 12);
+  const [isVisible, setIsVisible] = useState<boolean>(!scrollRootRef || page.pageIndex < 20);
   const [hasRenderedDirect, setHasRenderedDirect] = useState<boolean>(false);
 
   const intrinsicWidth = 320;
@@ -73,6 +73,10 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
 
   // Lazy-observe visibility inside the thumbnail scroll container for 500+ page responsiveness
   useEffect(() => {
+    if (!scrollRootRef) {
+      setIsVisible(true);
+      return;
+    }
     const el = containerRef.current;
     if (!el) return;
 
@@ -478,7 +482,7 @@ const PageThumbnailPreviewComponent: React.FC<PageThumbnailPreviewProps> = ({
   );
 };
 
-const PageThumbnailPreview = React.memo(PageThumbnailPreviewComponent);
+export const PageThumbnailPreview = React.memo(PageThumbnailPreviewComponent);
 
 const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
   pdfDocProxy,
@@ -656,22 +660,42 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
 
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
-    if (draggedPageIdx === null || draggedPageIdx === targetIndex || !onReorderPages) {
+    const fromIdx =
+      draggedPageIdx !== null
+        ? draggedPageIdx
+        : Number.parseInt(e.dataTransfer.getData('text/plain'), 10);
+
+    if (
+      Number.isNaN(fromIdx) ||
+      fromIdx === targetIndex ||
+      !onReorderPages
+    ) {
       setDraggedPageIdx(null);
       setDropIndicator(null);
       return;
     }
 
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const isAfter =
+      dropIndicator && dropIndicator.index === targetIndex
+        ? dropIndicator.position === 'after'
+        : e.clientY > rect.top + rect.height / 2;
+
     let destination = targetIndex;
-    if (dropIndicator?.position === 'after') {
-      destination = draggedPageIdx < targetIndex ? targetIndex : targetIndex + 1;
+    if (isAfter) {
+      destination = fromIdx < targetIndex ? targetIndex : targetIndex + 1;
     } else {
-      destination = draggedPageIdx < targetIndex ? targetIndex - 1 : targetIndex;
+      destination = fromIdx < targetIndex ? targetIndex - 1 : targetIndex;
+    }
+
+    // If dropping directly onto an adjacent card would result in no movement, move to targetIndex
+    if (destination === fromIdx && targetIndex !== fromIdx) {
+      destination = targetIndex;
     }
     destination = Math.max(0, Math.min(pages.length - 1, destination));
 
-    if (destination !== draggedPageIdx) {
-      onReorderPages(draggedPageIdx, destination);
+    if (destination !== fromIdx) {
+      onReorderPages(fromIdx, destination);
     }
 
     setDraggedPageIdx(null);
@@ -767,7 +791,10 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
                 draggable={Boolean(onReorderPages)}
                 onDragStart={(e) => handleDragStart(e, page.pageIndex)}
                 onDragOver={(e) => handleDragOver(e, page.pageIndex)}
-                onDragLeave={() => setDropIndicator(null)}
+                onDragLeave={(e) => {
+                  if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                  setDropIndicator(null);
+                }}
                 onDrop={(e) => handleDrop(e, page.pageIndex)}
                 onDragEnd={() => {
                   setDraggedPageIdx(null);

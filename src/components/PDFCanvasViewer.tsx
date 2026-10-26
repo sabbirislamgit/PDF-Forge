@@ -13,6 +13,7 @@ import {
   FontStyle,
   AnnotationItem,
   AnnotationType,
+  PDFRect,
 } from '../types/pdf';
 import { AnnotationOverlay } from './AnnotationOverlay';
 import {
@@ -137,6 +138,13 @@ interface PDFCanvasViewerProps {
   onAddAnnotation?: (annot: AnnotationItem, pageIndex: number) => void;
   onUpdateAnnotation?: (annot: AnnotationItem, pageIndex: number) => void;
   onDeleteAnnotation?: (id: string, pageIndex: number) => void;
+  onAddObjectOnPage?: (obj: PDFObject, pageIndex: number, startEditingText?: boolean) => void;
+  onRequestImageAtRect?: (pageIndex: number, bounds: PDFRect) => void;
+  onDropImageFileOnPage?: (file: File, pageIndex: number, bounds: PDFRect) => void;
+  drawColor?: string;
+  drawStrokeWidth?: number;
+  textToolColor?: string;
+  textToolFontSize?: number;
 }
 
 type DragMode = 'move' | 'rotate' | 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | null;
@@ -195,6 +203,14 @@ interface PageItemProps {
   onTriggerCopy: (e: React.MouseEvent, obj: PDFObject) => void;
   onFindEverywhere: (obj: PDFObject) => void;
   onDeleteObject: (objId: string, pageIndex: number) => void;
+  isDrawingFreehandOnThisPage?: boolean;
+  freehandPoints?: { x: number; y: number }[];
+  drawColor?: string;
+  drawStrokeWidth?: number;
+  onStartFreehand?: (e: React.MouseEvent, pageIndex: number) => void;
+  onAddTextAtPoint?: (e: React.MouseEvent, pageIndex: number) => void;
+  onAddImageAtPoint?: (e: React.MouseEvent, pageIndex: number) => void;
+  onDropImageFile?: (file: File, e: React.DragEvent, pageIndex: number) => void;
 }
 
 function getCssFontFamily(family?: string): string {
@@ -241,6 +257,14 @@ const PageItemComponent: React.FC<PageItemProps> = ({
   onTriggerCopy,
   onFindEverywhere,
   onDeleteObject,
+  isDrawingFreehandOnThisPage,
+  freehandPoints,
+  drawColor = '#dc2626',
+  drawStrokeWidth = 3,
+  onStartFreehand,
+  onAddTextAtPoint,
+  onAddImageAtPoint,
+  onDropImageFile,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pageContainerRef = useRef<HTMLDivElement>(null);
@@ -252,8 +276,12 @@ const PageItemComponent: React.FC<PageItemProps> = ({
     if (editingTextObjectId && inlineTextareaRef.current) {
       const el = inlineTextareaRef.current;
       el.focus();
-      const len = el.value.length;
-      el.setSelectionRange(len, len);
+      if (el.value === 'New Text') {
+        el.select();
+      } else {
+        const len = el.value.length;
+        el.setSelectionRange(len, len);
+      }
     }
   }, [editingTextObjectId]);
 
@@ -468,13 +496,36 @@ const PageItemComponent: React.FC<PageItemProps> = ({
   }, [objects, pageModifications.removedObjectIds, pageModifications.pastedObjects]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
+    if (primaryMode === 'annotate') return;
     if (activeTool === 'crop') {
       onStartCrop(e, pageInfo.pageIndex);
+    } else if (activeTool === 'draw') {
+      onStartFreehand?.(e, pageInfo.pageIndex);
+    } else if (activeTool === 'text') {
+      onAddTextAtPoint?.(e, pageInfo.pageIndex);
+    } else if (activeTool === 'image') {
+      onAddImageAtPoint?.(e, pageInfo.pageIndex);
     } else {
       if (e.target === e.currentTarget) {
         onStopEditText();
         onSelectObject(null);
       }
+    }
+  };
+
+  const handlePageDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  };
+
+  const handlePageDrop = (e: React.DragEvent) => {
+    const file = e.dataTransfer.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      e.preventDefault();
+      e.stopPropagation();
+      onDropImageFile?.(file, e, pageInfo.pageIndex);
     }
   };
 
@@ -505,6 +556,8 @@ const PageItemComponent: React.FC<PageItemProps> = ({
       id={`page-container-${pageInfo.pageIndex}`}
       data-page-index={pageInfo.pageIndex}
       onMouseDown={handleMouseDown}
+      onDragOver={handlePageDragOver}
+      onDrop={handlePageDrop}
       className="relative bg-white pdf-shadow select-none shrink-0 transition-shadow duration-150"
       style={{
         width: `${pageWidthPx}px`,
@@ -668,6 +721,34 @@ const PageItemComponent: React.FC<PageItemProps> = ({
         </div>
       )}
 
+      {/* LIVE FREEHAND DRAWING PREVIEW OVERLAY */}
+      {isDrawingFreehandOnThisPage && freehandPoints && freehandPoints.length > 0 && (
+        <svg
+          className="absolute inset-0 z-40 pointer-events-none"
+          width={pageWidthPx}
+          height={pageHeightPx}
+          viewBox={`0 0 ${pageWidthPx} ${pageHeightPx}`}
+        >
+          {freehandPoints.length === 1 ? (
+            <circle
+              cx={freehandPoints[0].x}
+              cy={freehandPoints[0].y}
+              r={Math.max(1.5, (drawStrokeWidth * zoom) / 2)}
+              fill={drawColor}
+            />
+          ) : (
+            <polyline
+              fill="none"
+              stroke={drawColor}
+              strokeWidth={Math.max(1.5, drawStrokeWidth * zoom)}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={freehandPoints.map((p) => `${p.x},${p.y}`).join(' ')}
+            />
+          )}
+        </svg>
+      )}
+
       {/* INTERACTIVE OBJECTS OVERLAY (Always rendered when mounted so pasted/cropped objects are immediately visible) */}
       {(isCanvasMounted || renderReady) &&
         allCurrentObjects.map((obj) => {
@@ -703,11 +784,18 @@ const PageItemComponent: React.FC<PageItemProps> = ({
             );
           }
 
+          const isToolCreationMode =
+            activeTool === 'crop' ||
+            activeTool === 'text' ||
+            activeTool === 'image' ||
+            activeTool === 'draw';
+
           return (
             <div
               key={obj.id}
               onClick={(e) => {
                 if (activeTool === 'crop' && isDrawingCrop) return;
+                if (isToolCreationMode && !isSelected) return;
                 e.stopPropagation();
                 onSelectObject(obj);
               }}
@@ -719,6 +807,7 @@ const PageItemComponent: React.FC<PageItemProps> = ({
               }}
               onMouseDown={(e) => {
                 if (activeTool === 'crop') return;
+                if (isToolCreationMode && !isSelected) return;
                 if (isEditingThisText) {
                   // Allow clicking inside the textarea without starting a move drag
                   return;
@@ -726,7 +815,9 @@ const PageItemComponent: React.FC<PageItemProps> = ({
                 onObjectMouseDown(e, obj, pageInfo.pageIndex, 'move');
               }}
               className={`absolute group transition-shadow duration-150 ${
-                activeTool === 'crop' && isDrawingCrop ? 'pointer-events-none ' : ''
+                (activeTool === 'crop' && isDrawingCrop) || (isToolCreationMode && !isSelected)
+                  ? 'pointer-events-none '
+                  : ''
               }${
                 isEditingThisText
                   ? 'ring-2 ring-amber-400 bg-white/95 z-40 shadow-lg cursor-text'
@@ -1268,6 +1359,10 @@ const PageItem = React.memo(PageItemComponent, (prev, next) => {
     prev.isDrawingCrop !== next.isDrawingCrop ||
     prev.isCropActiveOnThisPage !== next.isCropActiveOnThisPage ||
     prev.cropMarquee !== next.cropMarquee ||
+    prev.isDrawingFreehandOnThisPage !== next.isDrawingFreehandOnThisPage ||
+    prev.freehandPoints !== next.freehandPoints ||
+    prev.drawColor !== next.drawColor ||
+    prev.drawStrokeWidth !== next.drawStrokeWidth ||
     prev.primaryMode !== next.primaryMode ||
     prev.activeAnnotationType !== next.activeAnnotationType ||
     prev.selectedAnnotationId !== next.selectedAnnotationId ||
@@ -1358,6 +1453,13 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
   onAddAnnotation,
   onUpdateAnnotation,
   onDeleteAnnotation,
+  onAddObjectOnPage,
+  onRequestImageAtRect,
+  onDropImageFileOnPage,
+  drawColor = '#dc2626',
+  drawStrokeWidth = 3,
+  textToolColor = '#111827',
+  textToolFontSize = 14,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [copiedNotification, setCopiedNotification] = useState<string | null>(null);
@@ -1381,6 +1483,12 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
   const [isDrawingCrop, setIsDrawingCrop] = useState(false);
   const [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null);
   const [cropMarquee, setCropMarquee] = useState<ViewportRect | null>(null);
+
+  // Freehand Draw Tool State
+  const [freehandPageIndex, setFreehandPageIndex] = useState<number | null>(null);
+  const [isDrawingFreehand, setIsDrawingFreehand] = useState(false);
+  const [freehandPoints, setFreehandPoints] = useState<{ x: number; y: number }[]>([]);
+  const freehandPointsRef = useRef<{ x: number; y: number }[]>([]);
 
   // Active interaction drag state for moving/resizing/rotating
   const [dragState, setDragState] = useState<{
@@ -1596,6 +1704,256 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
     setEditingTextObjectId(null);
   }, [setEditingTextObjectId]);
 
+  // ================= DIRECT PAGE TOOLS: TEXT, IMAGE, FREEHAND DRAW =================
+  const handleAddTextAtPoint = useCallback(
+    (e: React.MouseEvent, pageIndex: number) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const pageInfo = pages[pageIndex];
+      const pageEl = document.getElementById(`page-container-${pageIndex}`);
+      if (!pageInfo || !pageEl || !onAddObjectOnPage) return;
+
+      const rect = pageEl.getBoundingClientRect();
+      const vpX = Math.max(0, Math.min(e.clientX - rect.left, rect.width - 20));
+      const vpY = Math.max(0, Math.min(e.clientY - rect.top, rect.height - 20));
+
+      const defaultWidthPt = 160;
+      const defaultHeightPt = Math.max(24, Math.round(textToolFontSize * 1.8));
+      const vpRect: ViewportRect = {
+        x: vpX,
+        y: Math.max(0, vpY - (defaultHeightPt * zoom) / 2),
+        width: defaultWidthPt * zoom,
+        height: defaultHeightPt * zoom,
+      };
+
+      const pdfBounds = clampPdfRect(
+        viewportToPdfRect(vpRect, pageInfo.height, zoom),
+        pageInfo.width,
+        pageInfo.height
+      );
+
+      const newTextObj: PDFObject = {
+        id: `text-tool-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        pageIndex,
+        type: 'text',
+        bounds: pdfBounds,
+        text: 'New Text',
+        fontSize: textToolFontSize,
+        fontFamily: 'Helvetica',
+        fontWeight: 'normal',
+        fontStyle: 'normal',
+        underline: false,
+        textAlign: 'left',
+        color: textToolColor,
+        rotation: 0,
+        opacity: 1,
+        layerType: 'added-text',
+        isNew: true,
+        label: 'New Text',
+      };
+
+      onAddObjectOnPage(newTextObj, pageIndex, true);
+    },
+    [pages, zoom, textToolFontSize, textToolColor, onAddObjectOnPage]
+  );
+
+  const handleAddImageAtPoint = useCallback(
+    (e: React.MouseEvent, pageIndex: number) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const pageInfo = pages[pageIndex];
+      const pageEl = document.getElementById(`page-container-${pageIndex}`);
+      if (!pageInfo || !pageEl || !onRequestImageAtRect) return;
+
+      const rect = pageEl.getBoundingClientRect();
+      const vpX = e.clientX - rect.left;
+      const vpY = e.clientY - rect.top;
+
+      const defaultW = Math.min(180, pageInfo.width * 0.4);
+      const defaultH = Math.min(135, pageInfo.height * 0.3);
+      const vpRect: ViewportRect = {
+        x: Math.max(0, vpX - (defaultW * zoom) / 2),
+        y: Math.max(0, vpY - (defaultH * zoom) / 2),
+        width: defaultW * zoom,
+        height: defaultH * zoom,
+      };
+
+      const pdfBounds = clampPdfRect(
+        viewportToPdfRect(vpRect, pageInfo.height, zoom),
+        pageInfo.width,
+        pageInfo.height
+      );
+
+      onRequestImageAtRect(pageIndex, pdfBounds);
+    },
+    [pages, zoom, onRequestImageAtRect]
+  );
+
+  const handleDropImageFile = useCallback(
+    (file: File, e: React.DragEvent, pageIndex: number) => {
+      const pageInfo = pages[pageIndex];
+      const pageEl = document.getElementById(`page-container-${pageIndex}`);
+      if (!pageInfo || !pageEl || !onDropImageFileOnPage) return;
+
+      const rect = pageEl.getBoundingClientRect();
+      const vpX = e.clientX - rect.left;
+      const vpY = e.clientY - rect.top;
+
+      const defaultW = Math.min(180, pageInfo.width * 0.4);
+      const defaultH = Math.min(135, pageInfo.height * 0.3);
+      const vpRect: ViewportRect = {
+        x: Math.max(0, vpX - (defaultW * zoom) / 2),
+        y: Math.max(0, vpY - (defaultH * zoom) / 2),
+        width: defaultW * zoom,
+        height: defaultH * zoom,
+      };
+
+      const pdfBounds = clampPdfRect(
+        viewportToPdfRect(vpRect, pageInfo.height, zoom),
+        pageInfo.width,
+        pageInfo.height
+      );
+
+      onDropImageFileOnPage(file, pageIndex, pdfBounds);
+    },
+    [pages, zoom, onDropImageFileOnPage]
+  );
+
+  const handleStartFreehand = useCallback(
+    (e: React.MouseEvent, pageIndex: number) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const pageEl = document.getElementById(`page-container-${pageIndex}`);
+      if (!pageEl) return;
+
+      const rect = pageEl.getBoundingClientRect();
+      const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+      const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+
+      const initialPts = [{ x, y }];
+      freehandPointsRef.current = initialPts;
+      setFreehandPageIndex(pageIndex);
+      setIsDrawingFreehand(true);
+      setFreehandPoints(initialPts);
+      setEditingTextObjectId(null);
+      onSelectObject(null);
+      onActivePageChange(pageIndex);
+    },
+    [onSelectObject, setEditingTextObjectId, onActivePageChange]
+  );
+
+  const finalizeFreehandStroke = useCallback(() => {
+    const pts = freehandPointsRef.current;
+    const pageIdx = freehandPageIndex;
+    setIsDrawingFreehand(false);
+    setFreehandPageIndex(null);
+    setFreehandPoints([]);
+    freehandPointsRef.current = [];
+
+    if (pageIdx === null || pts.length === 0 || !onAddObjectOnPage) return;
+    const pageInfo = pages[pageIdx];
+    if (!pageInfo) return;
+
+    // Convert viewport pixel points to PDF points relative to top-left
+    const pdfPts = pts.map((p) => ({
+      x: p.x / zoom,
+      y: p.y / zoom,
+    }));
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const p of pdfPts) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+
+    const pad = Math.max(drawStrokeWidth * 1.5, 4);
+    const boxLeft = Math.max(0, minX - pad);
+    const boxTop = Math.max(0, minY - pad);
+    const boxRight = Math.min(pageInfo.width, Math.max(minX + 6, maxX) + pad);
+    const boxBottom = Math.min(pageInfo.height, Math.max(minY + 6, maxY) + pad);
+
+    const widthPt = Math.max(8, boxRight - boxLeft);
+    const heightPt = Math.max(8, boxBottom - boxTop);
+
+    // Render smooth quadratic curve onto a high-res 300 DPI transparent canvas
+    const dpiScale = 4.167;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(16, Math.ceil(widthPt * dpiScale));
+    canvas.height = Math.max(16, Math.ceil(heightPt * dpiScale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.scale(dpiScale, dpiScale);
+    ctx.strokeStyle = drawColor;
+    ctx.fillStyle = drawColor;
+    ctx.lineWidth = drawStrokeWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (pdfPts.length === 1) {
+      ctx.beginPath();
+      ctx.arc(
+        pdfPts[0].x - boxLeft,
+        pdfPts[0].y - boxTop,
+        Math.max(1, drawStrokeWidth / 2),
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(pdfPts[0].x - boxLeft, pdfPts[0].y - boxTop);
+      for (let i = 1; i < pdfPts.length - 1; i++) {
+        const midX = (pdfPts[i].x + pdfPts[i + 1].x) / 2 - boxLeft;
+        const midY = (pdfPts[i].y + pdfPts[i + 1].y) / 2 - boxTop;
+        ctx.quadraticCurveTo(pdfPts[i].x - boxLeft, pdfPts[i].y - boxTop, midX, midY);
+      }
+      const last = pdfPts[pdfPts.length - 1];
+      ctx.lineTo(last.x - boxLeft, last.y - boxTop);
+      ctx.stroke();
+    }
+
+    const imageDataUrl = canvas.toDataURL('image/png');
+
+    const pdfBounds: PDFRect = clampPdfRect(
+      {
+        x: boxLeft,
+        y: pageInfo.height - boxTop - heightPt,
+        width: widthPt,
+        height: heightPt,
+      },
+      pageInfo.width,
+      pageInfo.height
+    );
+
+    const newDrawingObj: PDFObject = {
+      id: `draw-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      pageIndex: pageIdx,
+      type: 'image',
+      bounds: pdfBounds,
+      imageDataUrl,
+      originalWidth: pdfBounds.width,
+      originalHeight: pdfBounds.height,
+      rotation: 0,
+      opacity: 1,
+      strokeColor: drawColor,
+      strokeWidth: drawStrokeWidth,
+      layerType: 'drawing',
+      isNew: true,
+      label: `Drawing (${Math.round(pdfBounds.width)}×${Math.round(pdfBounds.height)} pt)`,
+    };
+
+    onAddObjectOnPage(newDrawingObj, pageIdx, false);
+  }, [freehandPageIndex, pages, zoom, drawColor, drawStrokeWidth, onAddObjectOnPage]);
+
   // ================= CROP / MARQUEE SELECTION LOGIC =================
   const handleStartCrop = useCallback(
     (e: React.MouseEvent, pageIndex: number) => {
@@ -1620,6 +1978,22 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
   );
 
   const handleGlobalMouseMove = (e: React.MouseEvent) => {
+    if (isDrawingFreehand && freehandPageIndex !== null) {
+      const pageEl = document.getElementById(`page-container-${freehandPageIndex}`);
+      if (!pageEl) return;
+      const rect = pageEl.getBoundingClientRect();
+      const currentX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+      const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+      const pts = freehandPointsRef.current;
+      const last = pts[pts.length - 1];
+      if (!last || Math.hypot(currentX - last.x, currentY - last.y) >= 1.5) {
+        const nextPts = [...pts, { x: currentX, y: currentY }];
+        freehandPointsRef.current = nextPts;
+        setFreehandPoints(nextPts);
+      }
+      return;
+    }
+
     if (!isDrawingCrop || !cropStart || cropPageIndex === null) return;
 
     const clientX = e.clientX;
@@ -1643,6 +2017,10 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
   };
 
   const handleGlobalMouseUp = () => {
+    if (isDrawingFreehand) {
+      finalizeFreehandStroke();
+      return;
+    }
     if (isDrawingCrop) {
       setIsDrawingCrop(false);
       setCropStart(null);
@@ -2095,7 +2473,11 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
       onMouseMove={handleGlobalMouseMove}
       onMouseUp={handleGlobalMouseUp}
       className={`flex-1 bg-[#141414] overflow-auto relative select-none scroll-smooth ${
-        activeTool === 'crop' ? 'cursor-crosshair' : 'cursor-default'
+        activeTool === 'crop' || activeTool === 'draw' || activeTool === 'image'
+          ? 'cursor-crosshair'
+          : activeTool === 'text'
+          ? 'cursor-text'
+          : 'cursor-default'
       }`}
     >
       {/* Toast Notification */}
@@ -2258,6 +2640,20 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
                 onTriggerCopy={handleTriggerCopy}
                 onFindEverywhere={onFindEverywhere}
                 onDeleteObject={onDeleteObject}
+                isDrawingFreehandOnThisPage={
+                  isDrawingFreehand && freehandPageIndex === page.pageIndex
+                }
+                freehandPoints={
+                  isDrawingFreehand && freehandPageIndex === page.pageIndex
+                    ? freehandPoints
+                    : undefined
+                }
+                drawColor={drawColor}
+                drawStrokeWidth={drawStrokeWidth}
+                onStartFreehand={handleStartFreehand}
+                onAddTextAtPoint={handleAddTextAtPoint}
+                onAddImageAtPoint={handleAddImageAtPoint}
+                onDropImageFile={handleDropImageFile}
                 primaryMode={primaryMode}
                 activeAnnotationType={activeAnnotationType}
                 annotationColor={annotationColor}
@@ -2306,6 +2702,20 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
             onTriggerCopy={handleTriggerCopy}
             onFindEverywhere={onFindEverywhere}
             onDeleteObject={onDeleteObject}
+            isDrawingFreehandOnThisPage={
+              isDrawingFreehand && freehandPageIndex === singlePageInfo.pageIndex
+            }
+            freehandPoints={
+              isDrawingFreehand && freehandPageIndex === singlePageInfo.pageIndex
+                ? freehandPoints
+                : undefined
+            }
+            drawColor={drawColor}
+            drawStrokeWidth={drawStrokeWidth}
+            onStartFreehand={handleStartFreehand}
+            onAddTextAtPoint={handleAddTextAtPoint}
+            onAddImageAtPoint={handleAddImageAtPoint}
+            onDropImageFile={handleDropImageFile}
             primaryMode={primaryMode}
             activeAnnotationType={activeAnnotationType}
             annotationColor={annotationColor}

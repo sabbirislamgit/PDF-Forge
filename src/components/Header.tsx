@@ -38,7 +38,7 @@ import {
 } from 'lucide-react';
 import { ViewMode } from '../types/pdf';
 
-export type ToolMode = 'select' | 'crop';
+export type ToolMode = 'select' | 'text' | 'image' | 'draw' | 'crop';
 
 interface HeaderProps {
   primaryMode?: 'edit' | 'annotate';

@@ -1,10 +1,5 @@
 import React, { useRef } from 'react';
-import {
-  FileUp,
-  Replace,
-  CheckCircle2,
-  Crop,
-} from 'lucide-react';
+import { FileUp } from 'lucide-react';
 
 interface EmptyStateProps {
   onFileSelected: (file: File) => void;
@@ -47,16 +42,16 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           <div className="flex justify-center">
             <img
               src="/app-logo.png"
-              alt="Sabbir PDF Editor Logo"
+              alt="PDF Forge Logo"
               className="w-20 h-20 object-contain drop-shadow-xl"
             />
           </div>
 
           <h1 className="text-3xl font-extrabold text-white tracking-tight sm:text-4xl">
-            Sabbir PDF Editor
+            PDF Forge
           </h1>
           <p className="text-sm text-neutral-400 max-w-lg mx-auto leading-relaxed">
-            Upload your PDF to select, crop, copy, and paste objects across pages, or replace and remove recurring objects everywhere.
+            Professional desktop PDF editor. Add text, images, and freehand drawings directly on pages, reorganize pages, crop &amp; paste objects, or replace recurring elements everywhere.
           </p>
         </div>
 
@@ -101,57 +96,6 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             <FileUp className="w-4 h-4" />
             <span>Browse PDF File</span>
           </button>
-        </div>
-
-        {/* Feature Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-          {/* Feature 1 Card */}
-          <div className="bg-[#1b1b1b] border border-[#2e2e2e] rounded-xl p-4 space-y-2.5 shadow-sm">
-            <div className="flex items-center space-x-2 text-blue-400 font-bold text-xs uppercase tracking-wider">
-              <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                <Crop className="w-4 h-4" />
-              </div>
-              <span>Feature 1: Copy, Crop & Paste</span>
-            </div>
-            <ul className="text-xs text-neutral-400 space-y-1.5 leading-relaxed">
-              <li className="flex items-start space-x-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
-                <span>Select discrete objects or drag the <b>Crop Tool</b> over any page region.</span>
-              </li>
-              <li className="flex items-start space-x-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
-                <span>Copy (<kbd className="font-mono text-[10px] bg-[#252525] px-1 rounded">Ctrl+C</kbd>) and paste (<kbd className="font-mono text-[10px] bg-[#252525] px-1 rounded">Ctrl+V</kbd>) multiple times on any page.</span>
-              </li>
-              <li className="flex items-start space-x-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
-                <span>Smoothly drag, reposition, and resize with 8 precision handles.</span>
-              </li>
-            </ul>
-          </div>
-
-          {/* Feature 2 Card */}
-          <div className="bg-[#1b1b1b] border border-[#2e2e2e] rounded-xl p-4 space-y-2.5 shadow-sm">
-            <div className="flex items-center space-x-2 text-cyan-400 font-bold text-xs uppercase tracking-wider">
-              <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
-                <Replace className="w-4 h-4" />
-              </div>
-              <span>Feature 2: Replace / Remove Everywhere</span>
-            </div>
-            <ul className="text-xs text-neutral-400 space-y-1.5 leading-relaxed">
-              <li className="flex items-start space-x-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
-                <span>Detects identical or visually similar logos, watermarks, stamps, and headers across all pages.</span>
-              </li>
-              <li className="flex items-start space-x-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
-                <span>Highlights all occurrences with instant multi-page badge counts.</span>
-              </li>
-              <li className="flex items-start space-x-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
-                <span><b>Remove Everywhere</b> or <b>Replace Everywhere</b> preserving exact size, coordinates & rotation.</span>
-              </li>
-            </ul>
-          </div>
         </div>
       </div>
     </div>

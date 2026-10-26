@@ -30,7 +30,10 @@ import {
 } from './utils/pdfExtractor';
 import { rotatePdfRect } from './utils/pdfCoordinates';
 import { findMatchingObjects } from './utils/objectMatching';
-import { applyModificationsAndExport, downloadPdf } from './utils/pdfModifier';
+import {
+  applyModificationsAndExport,
+  savePdfToDestination,
+} from './utils/pdfModifier';
 import {
   isPageLikelyScanned,
   runOcrOnPages,
@@ -47,6 +50,7 @@ import { AddBlankPageModal } from './components/AddBlankPageModal';
 import { DeletePageModal } from './components/DeletePageModal';
 import { PageOrganizerModal } from './components/PageOrganizerModal';
 import { PDFProtectionModal } from './components/PDFProtectionModal';
+import { SaveAsModal } from './components/SaveAsModal';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { OcrModal } from './components/OcrModal';
 import { FindReplaceBar } from './components/FindReplaceBar';
@@ -54,7 +58,7 @@ import { WatermarkModal } from './components/WatermarkModal';
 import { PageNumberModal, formatPageNumberString } from './components/PageNumberModal';
 import { HeaderFooterModal, resolveHeaderFooterTemplate } from './components/HeaderFooterModal';
 import { EmptyState } from './components/EmptyState';
-import { Trash2, Undo2, X, Check, AlertTriangle } from 'lucide-react';
+import { Trash2, Undo2, X, Check, AlertTriangle, Maximize2 } from 'lucide-react';
 
 const MAX_HISTORY_STEPS = 50;
 
@@ -187,6 +191,23 @@ export default function App() {
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
   const [exportSuccess, setExportSuccess] = useState<boolean>(false);
+  const [savedFilenameToast, setSavedFilenameToast] = useState<string | null>(null);
+  const [isSaveAsModalOpen, setIsSaveAsModalOpen] = useState<boolean>(false);
+  const fileHandleRef = useRef<unknown>(null);
+
+  // Desktop Window Controls State (works in both Tauri desktop & browser preview)
+  const [isWindowMaximized, setIsWindowMaximized] = useState<boolean>(false);
+  const [isWindowMinimized, setIsWindowMinimized] = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isCloseConfirmOpen, setIsCloseConfirmOpen] = useState<boolean>(false);
+
+  // Direct-on-Page Editor Tool Settings (Text, Image, Freehand Draw)
+  const [drawColor, setDrawColor] = useState<string>('#dc2626');
+  const [drawStrokeWidth, setDrawStrokeWidth] = useState<number>(3);
+  const [textToolColor, setTextToolColor] = useState<string>('#111827');
+  const [textToolFontSize, setTextToolFontSize] = useState<number>(14);
+  const imageToolInputRef = useRef<HTMLInputElement>(null);
+  const pendingImagePlacementRef = useRef<{ pageIndex: number; bounds: PDFRect } | null>(null);
 
   // Primary Workflow Mode ('edit' or 'annotate')
   const [primaryMode, setPrimaryMode] = useState<'edit' | 'annotate'>('edit');
@@ -256,6 +277,15 @@ export default function App() {
     };
     window.addEventListener('resize', handleBreakpointResize);
     return () => window.removeEventListener('resize', handleBreakpointResize);
+  }, []);
+
+  // Sync browser Fullscreen state changes
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
   }, []);
 
   // Release PDF document proxy and render caches on unmount
@@ -1217,6 +1247,7 @@ export default function App() {
       setErrorToast('Please select a valid PDF document (.pdf).');
       return;
     }
+    fileHandleRef.current = null;
     const reader = new FileReader();
     reader.onload = async (e) => {
       const buffer = e.target?.result as ArrayBuffer;
@@ -1231,6 +1262,130 @@ export default function App() {
     };
     reader.readAsArrayBuffer(file);
   }, [pdfDocProxy]);
+
+  // ================= DIRECT PAGE TOOLS: ADD TEXT, ADD IMAGE, FREEHAND DRAW =================
+  const handleAddObjectOnPage = useCallback(
+    (newObj: PDFObject, pageIndex: number, startEditingText = false) => {
+      const currentMods = { ...modifications };
+      const pageMods = currentMods[pageIndex]
+        ? clonePageModifications(currentMods[pageIndex])
+        : createEmptyPageMod();
+
+      pageMods.pastedObjects = [...pageMods.pastedObjects, clonePDFObject(newObj)];
+      currentMods[pageIndex] = pageMods;
+
+      pushHistory(currentMods);
+      setActivePageIndex(pageIndex);
+      setSelectedObjectId(newObj.id);
+
+      if (startEditingText && newObj.type === 'text') {
+        setActiveTool('select');
+        setEditingTextObjectId(newObj.id);
+      } else {
+        setEditingTextObjectId(null);
+      }
+    },
+    [modifications, pushHistory]
+  );
+
+  const insertImageFileAtBounds = useCallback(
+    (file: File, pageIndex: number, targetBounds: PDFRect) => {
+      if (!file.type.startsWith('image/')) {
+        setErrorToast('Please choose a valid image file (PNG, JPG, WebP, SVG).');
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        if (!dataUrl) return;
+
+        const img = new Image();
+        img.onload = () => {
+          const pageInfo = pages[pageIndex] || pages[activePageIndex];
+          if (!pageInfo) return;
+
+          const naturalW = Math.max(1, img.naturalWidth || 200);
+          const naturalH = Math.max(1, img.naturalHeight || 200);
+          const aspect = naturalW / naturalH;
+
+          let finalW = targetBounds.width;
+          let finalH = finalW / aspect;
+          if (finalH > pageInfo.height * 0.65) {
+            finalH = pageInfo.height * 0.65;
+            finalW = finalH * aspect;
+          }
+          if (finalW > pageInfo.width * 0.75) {
+            finalW = pageInfo.width * 0.75;
+            finalH = finalW / aspect;
+          }
+
+          const centerX = targetBounds.x + targetBounds.width / 2;
+          const centerY = targetBounds.y + targetBounds.height / 2;
+          const x = Math.max(0, Math.min(pageInfo.width - finalW, centerX - finalW / 2));
+          const y = Math.max(0, Math.min(pageInfo.height - finalH, centerY - finalH / 2));
+
+          const newImageObj: PDFObject = {
+            id: `img-tool-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            pageIndex,
+            type: 'image',
+            bounds: {
+              x: Math.round(x * 10) / 10,
+              y: Math.round(y * 10) / 10,
+              width: Math.round(finalW * 10) / 10,
+              height: Math.round(finalH * 10) / 10,
+            },
+            imageDataUrl: dataUrl,
+            originalWidth: Math.round(finalW),
+            originalHeight: Math.round(finalH),
+            rotation: 0,
+            opacity: 1,
+            layerType: 'added-image',
+            isNew: true,
+            label: `Image (${file.name})`,
+          };
+
+          handleAddObjectOnPage(newImageObj, pageIndex, false);
+          setActiveTool('select');
+          triggerPageToast(`Added image "${file.name}" on Page ${pageIndex + 1}`);
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    },
+    [pages, activePageIndex, handleAddObjectOnPage, triggerPageToast]
+  );
+
+  const handleRequestImageAtRect = useCallback(
+    (pageIndex: number, bounds: PDFRect) => {
+      pendingImagePlacementRef.current = { pageIndex, bounds };
+      if (imageToolInputRef.current) {
+        imageToolInputRef.current.value = '';
+        imageToolInputRef.current.click();
+      }
+    },
+    []
+  );
+
+  const handleTriggerImageUploadFromToolbar = useCallback(() => {
+    const pageInfo = pages[activePageIndex];
+    if (!pageInfo) return;
+    const defaultW = Math.min(200, pageInfo.width * 0.45);
+    const defaultH = Math.min(150, pageInfo.height * 0.35);
+    pendingImagePlacementRef.current = {
+      pageIndex: activePageIndex,
+      bounds: {
+        x: (pageInfo.width - defaultW) / 2,
+        y: (pageInfo.height - defaultH) / 2,
+        width: defaultW,
+        height: defaultH,
+      },
+    };
+    if (imageToolInputRef.current) {
+      imageToolInputRef.current.value = '';
+      imageToolInputRef.current.click();
+    }
+  }, [pages, activePageIndex]);
 
   // ================= FEATURE 1: COPY & PASTE (WITH CROP & UNLIMITED PASTES) =================
   const handleCopyObject = useCallback(
@@ -2748,12 +2903,13 @@ export default function App() {
     [activePageIndex, pages, modifications, filename, pushHistory, triggerPageToast]
   );
 
-  // Save / Export edited PDF
-  const handleExportPdf = async () => {
+  // ================= SAVE & SAVE AS WORKFLOW =================
+  // 1. Save (Preserves original filename by default, writes to existing file handle or prompts location)
+  const handleSavePdf = useCallback(async () => {
     if (!pdfBytes || pdfBytes.length === 0) return;
 
     setIsProcessing(true);
-    setLoadingMessage('Compiling and saving edited PDF with original quality preserved...');
+    setLoadingMessage('Saving PDF with original filename and vector quality preserved...');
     try {
       const modifiedBytes = await applyModificationsAndExport(
         pdfBytes.slice(),
@@ -2762,28 +2918,125 @@ export default function App() {
         pages,
         protectionConfig
       );
-      const downloadName = filename
-        ? filename.replace(/\.pdf$/i, protectionConfig.enabled ? '_protected.pdf' : '_edited.pdf')
-        : (protectionConfig.enabled ? 'document_protected.pdf' : 'document_edited.pdf');
-      downloadPdf(modifiedBytes, downloadName);
-      setExportSuccess(true);
-      if (protectionConfig.enabled) {
-        triggerPageToast('Saved and encrypted PDF with password protection');
+
+      // Preserve the original filename by default
+      const targetFilename = filename || 'document.pdf';
+      const saveResult = await savePdfToDestination(modifiedBytes, targetFilename, {
+        forceSystemPicker: false,
+        existingHandle: fileHandleRef.current,
+      });
+
+      if (saveResult.cancelled) {
+        return;
       }
-      setTimeout(() => setExportSuccess(false), 3000);
+
+      if (saveResult.fileHandle) {
+        fileHandleRef.current = saveResult.fileHandle;
+      }
+
+      setSavedFilenameToast(saveResult.filename);
+      setExportSuccess(true);
+      setTimeout(() => setExportSuccess(false), 3200);
     } catch {
-      setErrorToast('Failed to export edited PDF. Please try again.');
+      setErrorToast('Failed to save PDF. Please try again.');
     } finally {
       setIsProcessing(false);
       setLoadingMessage('');
     }
-  };
+  }, [pdfBytes, modifications, allOriginalObjectsMap, pages, protectionConfig, filename]);
+
+  // 2. Save As (Choose custom filename, choose destination folder via system dialog, optionally switch active session to new file)
+  const handleConfirmSaveAs = useCallback(
+    async (options: {
+      targetFilename: string;
+      useSystemPicker: boolean;
+      switchActiveDocument: boolean;
+    }) => {
+      if (!pdfBytes || pdfBytes.length === 0) return;
+
+      setIsSaveAsModalOpen(false);
+      setIsProcessing(true);
+      setLoadingMessage(`Saving "${options.targetFilename}"...`);
+      try {
+        const modifiedBytes = await applyModificationsAndExport(
+          pdfBytes.slice(),
+          modifications,
+          allOriginalObjectsMap,
+          pages,
+          protectionConfig
+        );
+
+        const saveResult = await savePdfToDestination(modifiedBytes, options.targetFilename, {
+          forceSystemPicker: options.useSystemPicker,
+          existingHandle: null,
+        });
+
+        if (saveResult.cancelled) {
+          return;
+        }
+
+        if (saveResult.fileHandle) {
+          fileHandleRef.current = saveResult.fileHandle;
+        }
+
+        // If user enabled "Continue editing as this new file", update active document name
+        if (options.switchActiveDocument) {
+          setFilename(saveResult.filename);
+        }
+
+        setSavedFilenameToast(saveResult.filename);
+        setExportSuccess(true);
+        triggerPageToast(`Saved as "${saveResult.filename}"`);
+        setTimeout(() => setExportSuccess(false), 3200);
+      } catch {
+        setErrorToast('Failed to save PDF file. Please try again.');
+      } finally {
+        setIsProcessing(false);
+        setLoadingMessage('');
+      }
+    },
+    [
+      pdfBytes,
+      modifications,
+      allOriginalObjectsMap,
+      pages,
+      protectionConfig,
+      triggerPageToast,
+    ]
+  );
+
+  // Close document / window handler
+  const handleCloseDocumentOrWindow = useCallback(() => {
+    setFilename(null);
+    setPdfBytes(null);
+    setPages([]);
+    setPageObjectsMap(new Map());
+    setModifications({});
+    setHistory([]);
+    setHistoryIndex(0);
+    setSelectedObjectId(null);
+    setEditingTextObjectId(null);
+    setMatches([]);
+    setIsCloseConfirmOpen(false);
+    fileHandleRef.current = null;
+  }, []);
 
   // Keyboard Shortcuts Listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
       const isCmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      // Save: Ctrl+S / Cmd+S and Save As: Ctrl+Shift+S / Cmd+Shift+S
+      if (isCmdOrCtrl && e.key.toLowerCase() === 's' && filename) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          setIsSaveAsModalOpen(true);
+        } else {
+          handleSavePdf();
+        }
+        return;
+      }
 
       // Find & Replace: Ctrl+F / Cmd+F (even when an input isn't focused)
       if (isCmdOrCtrl && e.key.toLowerCase() === 'f' && filename) {
@@ -2802,6 +3055,15 @@ export default function App() {
 
       if (!isCmdOrCtrl && e.key.toLowerCase() === 'v') {
         setActiveTool('select');
+      }
+      if (!isCmdOrCtrl && e.key.toLowerCase() === 't') {
+        setActiveTool('text');
+      }
+      if (!isCmdOrCtrl && e.key.toLowerCase() === 'i') {
+        setActiveTool('image');
+      }
+      if (!isCmdOrCtrl && e.key.toLowerCase() === 'd') {
+        setActiveTool('draw');
       }
       if (!isCmdOrCtrl && e.key.toLowerCase() === 'c') {
         setActiveTool('crop');
@@ -2876,6 +3138,7 @@ export default function App() {
     handleDeleteObject,
     handleUndo,
     handleRedo,
+    handleSavePdf,
   ]);
 
   const hasModifications = useMemo(() => {
@@ -2906,7 +3169,29 @@ export default function App() {
   }, [deleteTargetPageIndex, modifications]);
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#141414] text-neutral-200 overflow-hidden font-sans">
+    <div
+      className={`flex flex-col bg-[#141414] text-neutral-200 overflow-hidden font-sans transition-all duration-200 ${
+        isWindowMaximized || isFullscreen
+          ? 'h-screen w-screen rounded-none'
+          : 'h-screen w-screen'
+      }`}
+    >
+      {/* Hidden file input for placing images via the Image Tool */}
+      <input
+        type="file"
+        ref={imageToolInputRef}
+        accept="image/png,image/jpeg,image/webp,image/svg+xml,image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          const placement = pendingImagePlacementRef.current;
+          if (file && placement) {
+            insertImageFileAtBounds(file, placement.pageIndex, placement.bounds);
+          }
+          e.target.value = '';
+        }}
+      />
+
       {/* Unified Professional Desktop Window Bar & Toolbar */}
       <TitleBar
         filename={filename}
@@ -2927,10 +3212,36 @@ export default function App() {
         primaryMode={primaryMode}
         isSidebarOpen={isSidebarOpen}
         isInspectorOpen={isInspectorOpen}
+        isWindowMaximized={isWindowMaximized}
+        isFullscreen={isFullscreen}
+        drawColor={drawColor}
+        drawStrokeWidth={drawStrokeWidth}
+        textToolColor={textToolColor}
+        textToolFontSize={textToolFontSize}
+        onChangeDrawColor={setDrawColor}
+        onChangeDrawStrokeWidth={setDrawStrokeWidth}
+        onChangeTextToolColor={setTextToolColor}
+        onChangeTextToolFontSize={setTextToolFontSize}
+        onTriggerUploadImageTool={handleTriggerImageUploadFromToolbar}
+        onMinimizeWindow={() => setIsWindowMinimized(true)}
+        onToggleWindowMaximize={() => setIsWindowMaximized((prev) => !prev)}
+        onToggleFullscreen={() => setIsFullscreen(Boolean(document.fullscreenElement))}
+        onCloseWindow={() => {
+          if (filename && hasModifications) {
+            setIsCloseConfirmOpen(true);
+          } else if (filename) {
+            handleCloseDocumentOrWindow();
+          }
+        }}
         onChangePrimaryMode={setPrimaryMode}
         onOpenProtection={() => setIsProtectionModalOpen(true)}
         onOpenPageOrganizer={() => setIsOrganizerModalOpen(true)}
-        onToolChange={setActiveTool}
+        onToolChange={(tool) => {
+          setActiveTool(tool);
+          if (tool !== 'select') {
+            setEditingTextObjectId(null);
+          }
+        }}
         onViewModeChange={handleViewModeChange}
         onUndo={handleUndo}
         onRedo={handleRedo}
@@ -2947,7 +3258,9 @@ export default function App() {
         onHighlightSameObjectMatches={() => handleHighlightSameObjectMatches()}
         onReplaceSameObject={handleOpenReplaceSameObject}
         onFileSelected={handleFileSelected}
-        onExport={handleExportPdf}
+        onSave={handleSavePdf}
+        onExport={handleSavePdf}
+        onSaveAs={() => setIsSaveAsModalOpen(true)}
         onOpenShortcuts={() => setIsShortcutsOpen(true)}
         onOpenAddBlankPage={() => setIsAddBlankPageModalOpen(true)}
         onDuplicatePage={() => handleDuplicatePage(activePageIndex)}
@@ -3091,6 +3404,13 @@ export default function App() {
             onAddAnnotation={handleAddAnnotation}
             onUpdateAnnotation={handleUpdateAnnotation}
             onDeleteAnnotation={handleDeleteAnnotation}
+            onAddObjectOnPage={handleAddObjectOnPage}
+            onRequestImageAtRect={handleRequestImageAtRect}
+            onDropImageFileOnPage={insertImageFileAtBounds}
+            drawColor={drawColor}
+            drawStrokeWidth={drawStrokeWidth}
+            textToolColor={textToolColor}
+            textToolFontSize={textToolFontSize}
           />
 
           {/* Right: Comments & Notes Drawer */}
@@ -3255,7 +3575,10 @@ export default function App() {
       {/* Full-Screen Page Organizer Workspace */}
       <PageOrganizerModal
         isOpen={isOrganizerModalOpen || isRearrangeModalOpen}
+        pdfDocProxy={pdfDocProxy}
         pages={pages}
+        pageObjectsMap={pageObjectsMap}
+        modifications={modifications}
         activePageIndex={activePageIndex}
         onClose={() => {
           setIsOrganizerModalOpen(false);
@@ -3272,6 +3595,94 @@ export default function App() {
         onDeletePages={handleDeletePagesBatch}
         onInsertBlankPage={handleInsertBlankPageAt}
       />
+
+      {/* Save As Modal */}
+      <SaveAsModal
+        isOpen={isSaveAsModalOpen}
+        originalFilename={filename}
+        pageCount={pages.length}
+        isProtected={protectionConfig.enabled}
+        isProcessing={isProcessing}
+        onClose={() => setIsSaveAsModalOpen(false)}
+        onConfirmSaveAs={handleConfirmSaveAs}
+      />
+
+      {/* Close Unsaved Document Confirmation Modal */}
+      {isCloseConfirmOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 select-none"
+          onClick={() => setIsCloseConfirmOpen(false)}
+        >
+          <div
+            className="bg-[#1e1e1e] border border-[#383838] rounded-2xl shadow-2xl w-full max-w-md overflow-hidden p-5 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start space-x-3">
+              <div className="p-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-white">Save changes before closing?</h3>
+                <p className="text-xs text-neutral-400 leading-relaxed">
+                  Your document <span className="text-neutral-200 font-semibold">{filename}</span> has unsaved edits.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-[#2c2c2c]">
+              <button
+                type="button"
+                onClick={() => setIsCloseConfirmOpen(false)}
+                className="px-3.5 py-1.5 rounded-lg bg-[#2a2a2e] hover:bg-[#343438] text-xs font-semibold text-neutral-300 hover:text-white transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCloseDocumentOrWindow}
+                className="px-3.5 py-1.5 rounded-lg bg-red-950/60 hover:bg-red-900/70 border border-red-800/50 text-xs font-semibold text-red-200 transition cursor-pointer"
+              >
+                Don&apos;t Save
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setIsCloseConfirmOpen(false);
+                  await handleSavePdf();
+                  handleCloseDocumentOrWindow();
+                }}
+                className="px-4 py-1.5 rounded-lg bg-[#0265dc] hover:bg-[#0151b0] text-xs font-semibold text-white transition cursor-pointer"
+              >
+                Save &amp; Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Minimized Window Restore Bar (when minimized in browser preview) */}
+      {isWindowMinimized && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end justify-center pb-6 select-none">
+          <div className="bg-[#1e1e1e] border border-[#3a3a3c] rounded-xl shadow-2xl px-4 py-2.5 flex items-center space-x-4">
+            <div className="flex items-center space-x-2">
+              <img src="/app-logo.png" alt="PDF Forge" className="w-5 h-5 object-contain" />
+              <span className="text-xs font-bold text-white">PDF Forge</span>
+              {filename && (
+                <span className="text-xs text-neutral-400 font-mono truncate max-w-[200px]">
+                  — {filename}
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsWindowMinimized(false)}
+              className="px-3 py-1 rounded-lg bg-[#0265dc] hover:bg-[#0151b0] text-white text-xs font-semibold flex items-center space-x-1.5 transition cursor-pointer"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+              <span>Restore Window</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* PDF Protection Modal */}
       <PDFProtectionModal
@@ -3370,7 +3781,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Export Success Toast */}
+      {/* Export / Save Success Toast */}
       {exportSuccess && (
         <div className="fixed bottom-6 right-6 z-50 bg-[#1e2a22] border border-emerald-500/60 shadow-2xl rounded-xl px-4 py-3 flex items-center space-x-3 text-emerald-200 text-xs animate-in fade-in slide-in-from-bottom-2 duration-150">
           <div className="p-1 rounded-full bg-emerald-500/20 text-emerald-400">
@@ -3379,8 +3790,12 @@ export default function App() {
             </svg>
           </div>
           <div>
-            <span className="font-semibold block text-white">Edited PDF Downloaded</span>
-            <span className="text-[11px] text-emerald-300/80">Original resolution, vector text, and quality preserved.</span>
+            <span className="font-semibold block text-white">
+              Saved {savedFilenameToast ? `"${savedFilenameToast}"` : 'PDF Document'}
+            </span>
+            <span className="text-[11px] text-emerald-300/80">
+              Original resolution, vector text, images, and drawings preserved.
+            </span>
           </div>
         </div>
       )}

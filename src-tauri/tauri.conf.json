@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Sabbir PDF Editor",
+  "productName": "PDF Forge",
   "version": "1.0.0",
-  "identifier": "com.sabbir.pdfeditor",
+  "identifier": "com.pdfforge.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:3000",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Sabbir PDF Editor",
+        "title": "PDF Forge",
         "width": 1440,
         "height": 900,
         "minWidth": 800,

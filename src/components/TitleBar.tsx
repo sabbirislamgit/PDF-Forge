@@ -1,14 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   FileUp,
-  Download,
+  Save,
+  FolderDown,
   Undo2,
   Redo2,
   ZoomIn,
   ZoomOut,
   Maximize2,
+  Minimize2,
   Keyboard,
   MousePointer,
+  Type,
+  Image as ImageIcon,
+  PenTool,
   Crop,
   FileText,
   LayoutGrid,
@@ -33,10 +38,11 @@ import {
   Copy,
   X,
   FilePlus2,
+  Expand,
 } from 'lucide-react';
 import { ViewMode } from '../types/pdf';
 
-export type ToolMode = 'select' | 'crop';
+export type ToolMode = 'select' | 'text' | 'image' | 'draw' | 'crop';
 
 export interface TitleBarProps {
   filename: string | null;
@@ -57,6 +63,24 @@ export interface TitleBarProps {
   isSidebarOpen?: boolean;
   isInspectorOpen?: boolean;
   matchCount?: number;
+  // Tool style settings for direct page tools (Text / Draw)
+  drawColor?: string;
+  onChangeDrawColor?: (color: string) => void;
+  drawStrokeWidth?: number;
+  onChangeDrawStrokeWidth?: (width: number) => void;
+  textToolColor?: string;
+  onChangeTextToolColor?: (color: string) => void;
+  textToolFontSize?: number;
+  onChangeTextToolFontSize?: (size: number) => void;
+  onTriggerUploadImageTool?: () => void;
+  // Window state callbacks
+  isWindowMaximized?: boolean;
+  onToggleWindowMaximize?: () => void;
+  onMinimizeWindow?: () => void;
+  onCloseWindow?: () => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
+  // Actions
   onChangePrimaryMode?: (mode: 'edit' | 'annotate') => void;
   onOpenProtection?: () => void;
   onOpenPageOrganizer?: () => void;
@@ -73,6 +97,8 @@ export interface TitleBarProps {
   onReplaceSameObject?: () => void;
   onRemoveEverywhere?: () => void;
   onFileSelected?: (file: File) => void;
+  onSave?: () => void;
+  onSaveAs?: () => void;
   onExport?: () => void;
   onOpenShortcuts?: () => void;
   onOpenAddBlankPage?: () => void;
@@ -89,39 +115,54 @@ export interface TitleBarProps {
   onToggleInspector?: () => void;
 }
 
+const DRAW_COLORS = ['#111827', '#dc2626', '#2563eb', '#16a34a', '#d97706', '#7c3aed'];
+
 export const TitleBar: React.FC<TitleBarProps> = ({
   filename,
   pageCount = 1,
   currentPage = 1,
   zoom = 1,
   activeTool = 'select',
-  viewMode = 'single',
   canUndo = false,
   canRedo = false,
   hasModifications = false,
   hasSelectedObject = false,
   isProcessing = false,
   isProtected = false,
-  isFindReplaceOpen = false,
   scannedPageCount = 0,
   primaryMode = 'edit',
   isSidebarOpen = true,
   isInspectorOpen = true,
   matchCount = 0,
+  drawColor = '#dc2626',
+  onChangeDrawColor,
+  drawStrokeWidth = 3,
+  onChangeDrawStrokeWidth,
+  textToolColor = '#111827',
+  onChangeTextToolColor,
+  textToolFontSize = 16,
+  onChangeTextToolFontSize,
+  onTriggerUploadImageTool,
+  isWindowMaximized = true,
+  onToggleWindowMaximize,
+  onMinimizeWindow,
+  onCloseWindow,
+  isFullscreen = false,
+  onToggleFullscreen,
   onChangePrimaryMode,
   onOpenProtection,
   onOpenPageOrganizer,
   onToolChange,
-  onViewModeChange,
   onUndo,
   onRedo,
   onZoomChange,
   onFitWidth,
-  onFitPage,
   onFindSameObject,
   onHighlightSameObjectMatches,
   onReplaceSameObject,
   onFileSelected,
+  onSave,
+  onSaveAs,
   onExport,
   onOpenShortcuts,
   onOpenAddBlankPage,
@@ -137,29 +178,39 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onToggleSidebar,
   onToggleInspector,
 }) => {
-  const [isMaximized, setIsMaximized] = useState(false);
   const [isTauri, setIsTauri] = useState(false);
+  const [tauriMaximized, setTauriMaximized] = useState(false);
+  const [tauriFullscreen, setTauriFullscreen] = useState(false);
 
-  // Menus
+  // Dropdown menus
   const [isPageMenuOpen, setIsPageMenuOpen] = useState(false);
   const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [isSameObjectMenuOpen, setIsSameObjectMenuOpen] = useState(false);
+  const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pageMenuRef = useRef<HTMLDivElement>(null);
   const toolsMenuRef = useRef<HTMLDivElement>(null);
   const sameObjectMenuRef = useRef<HTMLDivElement>(null);
+  const saveMenuRef = useRef<HTMLDivElement>(null);
 
-  // Tauri Runtime Window API Binding
+  // Tauri v2 runtime check
   useEffect(() => {
     const checkTauri = async () => {
       try {
-        if (typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)) {
+        if (
+          typeof window !== 'undefined' &&
+          ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+        ) {
           setIsTauri(true);
           const { getCurrentWindow } = await import('@tauri-apps/api/window');
           const appWindow = getCurrentWindow();
-          const maximized = await appWindow.isMaximized();
-          setIsMaximized(maximized);
+          const [maxState, fullState] = await Promise.all([
+            appWindow.isMaximized(),
+            appWindow.isFullscreen(),
+          ]);
+          setTauriMaximized(maxState);
+          setTauriFullscreen(fullState);
         }
       } catch {
         setIsTauri(false);
@@ -180,12 +231,16 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       if (sameObjectMenuRef.current && !sameObjectMenuRef.current.contains(e.target as Node)) {
         setIsSameObjectMenuOpen(false);
       }
+      if (saveMenuRef.current && !saveMenuRef.current.contains(e.target as Node)) {
+        setIsSaveMenuOpen(false);
+      }
     };
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsPageMenuOpen(false);
         setIsToolsMenuOpen(false);
         setIsSameObjectMenuOpen(false);
+        setIsSaveMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -197,46 +252,61 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   }, []);
 
   const handleMinimize = async () => {
-    try {
-      if (isTauri) {
+    if (isTauri) {
+      try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         await getCurrentWindow().minimize();
+        return;
+      } catch {
+        // Fallback to web minimize state
       }
-    } catch {
-      // Graceful no-op in browser
     }
+    onMinimizeWindow?.();
   };
 
   const handleToggleMaximize = async () => {
-    try {
-      if (isTauri) {
+    if (isTauri) {
+      try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        await getCurrentWindow().toggleMaximize();
-        const maximized = await getCurrentWindow().isMaximized();
-        setIsMaximized(maximized);
-      } else {
-        if (!document.fullscreenElement) {
-          await document.documentElement.requestFullscreen().catch(() => {});
-          setIsMaximized(true);
-        } else {
-          await document.exitFullscreen().catch(() => {});
-          setIsMaximized(false);
-        }
+        const win = getCurrentWindow();
+        await win.toggleMaximize();
+        const maxState = await win.isMaximized();
+        setTauriMaximized(maxState);
+        return;
+      } catch {
+        // Fallback to web maximize/restore state
       }
-    } catch {
-      setIsMaximized((prev) => !prev);
     }
+    onToggleWindowMaximize?.();
+  };
+
+  const handleToggleFullscreen = async () => {
+    if (isTauri) {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        const currentFull = await win.isFullscreen();
+        await win.setFullscreen(!currentFull);
+        setTauriFullscreen(!currentFull);
+        return;
+      } catch {
+        // Fallback to browser fullscreen
+      }
+    }
+    onToggleFullscreen?.();
   };
 
   const handleClose = async () => {
-    try {
-      if (isTauri) {
+    if (isTauri) {
+      try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         await getCurrentWindow().close();
+        return;
+      } catch {
+        // Fallback to web close handler
       }
-    } catch {
-      // Graceful no-op in browser
     }
+    onCloseWindow?.();
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -247,10 +317,18 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     }
   };
 
+  const effectiveMaximized = isTauri ? tauriMaximized : isWindowMaximized;
+  const effectiveFullscreen = isTauri ? tauriFullscreen : isFullscreen;
+
   return (
     <div
       data-tauri-drag-region
-      className="h-11 w-full bg-[#16171a] border-b border-[#292a30] flex items-center justify-between px-2 select-none text-xs text-neutral-300 z-50 shrink-0 gap-1.5"
+      onDoubleClick={(e) => {
+        if (e.target === e.currentTarget) {
+          handleToggleMaximize();
+        }
+      }}
+      className="h-11 w-full bg-[#15161a] border-b border-[#282a32] flex items-center justify-between px-2.5 select-none text-xs text-neutral-300 z-50 shrink-0 gap-1.5"
     >
       <input
         type="file"
@@ -260,45 +338,45 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         className="hidden"
       />
 
-      {/* ── LEFT: Branding, Open PDF, Sidebar Toggle & Undo/Redo ── */}
+      {/* ── LEFT: Brand Wordmark, Open File, Sidebar Toggle & Undo/Redo ── */}
       <div className="flex items-center space-x-1.5 shrink-0 pointer-events-auto">
-        {/* App Logo & Name */}
         <div
           data-tauri-drag-region
-          className="flex items-center space-x-2 pr-2 border-r border-[#2d2f38] mr-0.5 cursor-default"
+          onDoubleClick={handleToggleMaximize}
+          className="flex items-center space-x-2 pr-2.5 border-r border-[#2b2d36] mr-0.5 cursor-default"
         >
           <img
             src="/app-logo.png"
-            alt="Sabbir PDF Editor"
+            alt="PDF Forge"
+            referrerPolicy="no-referrer"
             className="w-5 h-5 rounded object-contain drop-shadow"
           />
-          <span className="font-semibold text-white tracking-tight text-[12px] flex items-center space-x-1">
-            <span>Sabbir PDF Editor</span>
-            <span className="hidden sm:inline-block text-[9.5px] px-1.5 py-0.2 bg-indigo-500/15 text-indigo-400 border border-indigo-500/30 rounded font-mono">
-              PRO
-            </span>
+          <span className="font-bold text-white tracking-tight text-[12.5px] whitespace-nowrap shrink-0">
+            PDF Forge
           </span>
         </div>
 
-        {/* Open PDF Action */}
+        {/* Open PDF */}
         <button
+          type="button"
           onClick={() => fileInputRef.current?.click()}
-          title="Open a PDF document"
-          className="flex items-center space-x-1.5 px-2.5 py-1 bg-[#23242a] hover:bg-[#2b2c34] text-neutral-200 border border-[#343640] rounded text-[11.5px] font-medium transition cursor-pointer"
+          title="Open PDF File"
+          className="flex items-center space-x-1.5 px-2.5 py-1 bg-[#22242c] hover:bg-[#2a2d37] text-neutral-200 border border-[#343744] rounded text-[11.5px] font-medium transition cursor-pointer whitespace-nowrap shrink-0"
         >
-          <FileUp className="w-3.5 h-3.5 text-indigo-400" />
+          <FileUp className="w-3.5 h-3.5 text-blue-400" />
           <span className="hidden md:inline">Open</span>
         </button>
 
-        {/* Sidebar Toggle (Only when file loaded) */}
+        {/* Sidebar Toggle */}
         {filename && onToggleSidebar && (
           <button
+            type="button"
             onClick={onToggleSidebar}
-            title={isSidebarOpen ? 'Hide Page Thumbnails' : 'Show Page Thumbnails'}
-            className={`p-1.5 rounded border transition cursor-pointer ${
+            title={isSidebarOpen ? 'Hide Page Thumbnails Sidebar' : 'Show Page Thumbnails Sidebar'}
+            className={`p-1.5 rounded border transition cursor-pointer shrink-0 ${
               isSidebarOpen
-                ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
-                : 'bg-[#202126] border-[#30323a] text-neutral-400 hover:text-white hover:bg-[#282a32]'
+                ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                : 'bg-[#202127] border-[#30323c] text-neutral-400 hover:text-white hover:bg-[#282a32]'
             }`}
           >
             <PanelLeft className="w-3.5 h-3.5" />
@@ -307,8 +385,9 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
         {/* Undo / Redo */}
         {filename && (
-          <div className="flex items-center space-x-0.5 pl-1">
+          <div className="flex items-center space-x-0.5 pl-0.5">
             <button
+              type="button"
               onClick={onUndo}
               disabled={!canUndo}
               title="Undo (Ctrl+Z)"
@@ -317,6 +396,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               <Undo2 className="w-3.5 h-3.5" />
             </button>
             <button
+              type="button"
               onClick={onRedo}
               disabled={!canRedo}
               title="Redo (Ctrl+Y)"
@@ -328,103 +408,252 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         )}
       </div>
 
-      {/* ── CENTER: File Info, Primary Mode Toggle, Tools & Organizer (Draggable Region around buttons) ── */}
+      {/* ── CENTER: Document Name, Direct Page Tools (Select / Text / Image / Draw / Crop), Organizer & Menus ── */}
       <div
         data-tauri-drag-region
-        className="flex items-center justify-center space-x-2 flex-1 min-w-0 px-2"
+        onDoubleClick={(e) => {
+          if (e.target === e.currentTarget) {
+            handleToggleMaximize();
+          }
+        }}
+        className="flex items-center justify-center space-x-1.5 flex-1 min-w-0 px-1"
       >
         {filename ? (
-          <div className="flex items-center space-x-2 max-w-full">
-            {/* Active Document Name & Modification Dot */}
+          <div className="flex items-center space-x-1.5 max-w-full overflow-x-auto no-scrollbar">
+            {/* Active Document Name */}
             <div
               data-tauri-drag-region
-              className="hidden lg:flex items-center space-x-1.5 text-neutral-300 text-[11px] max-w-[200px] truncate"
+              className="hidden xl:flex items-center space-x-1.5 text-neutral-300 text-[11px] max-w-[180px] truncate pr-1"
             >
               <FileText className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-              <span className="truncate font-medium text-neutral-200">{filename}</span>
-              <span className="text-neutral-500 shrink-0">({currentPage}/{pageCount})</span>
+              <span className="truncate font-medium text-neutral-200" title={filename}>
+                {filename}
+              </span>
+              <span className="text-neutral-500 font-mono tabular-nums shrink-0">
+                ({currentPage}/{pageCount})
+              </span>
               {hasModifications && (
-                <span
-                  title="Unsaved modifications"
-                  className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0"
-                />
+                <span className="text-amber-400 font-bold" title="Unsaved modifications">
+                  *
+                </span>
               )}
             </div>
 
             {/* Primary Mode Switcher: [ Edit ] | [ Annotate ] */}
             {onChangePrimaryMode && (
-              <div className="pointer-events-auto flex items-center bg-[#202126] p-0.5 rounded-lg border border-[#30323a]">
+              <div className="pointer-events-auto flex items-center bg-[#202127] p-0.5 rounded-lg border border-[#30323c] shrink-0">
                 <button
+                  type="button"
                   onClick={() => onChangePrimaryMode('edit')}
-                  className={`flex items-center space-x-1 px-2.5 py-0.5 rounded text-[11px] font-medium transition cursor-pointer ${
+                  className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
                     primaryMode === 'edit'
-                      ? 'bg-indigo-600 text-white shadow-sm'
+                      ? 'bg-blue-600 text-white shadow-xs'
                       : 'text-neutral-400 hover:text-neutral-200'
                   }`}
                 >
                   <MousePointer className="w-3 h-3" />
-                  <span>Edit</span>
+                  <span>Editor</span>
                 </button>
                 <button
+                  type="button"
                   onClick={() => onChangePrimaryMode('annotate')}
-                  className={`flex items-center space-x-1 px-2.5 py-0.5 rounded text-[11px] font-medium transition cursor-pointer ${
+                  className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
                     primaryMode === 'annotate'
-                      ? 'bg-amber-600 text-white shadow-sm'
+                      ? 'bg-amber-600 text-white shadow-xs'
                       : 'text-neutral-400 hover:text-neutral-200'
                   }`}
                 >
                   <Pencil className="w-3 h-3" />
-                  <span>Annotate</span>
+                  <span>Markup</span>
                 </button>
               </div>
             )}
 
-            {/* Selection Tool Mode (Select / Crop) */}
+            {/* ── DIRECT PAGE EDITOR TOOLS: Select | Text | Image | Freehand Draw | Crop ── */}
             {primaryMode === 'edit' && onToolChange && (
-              <div className="pointer-events-auto hidden sm:flex items-center bg-[#202126] p-0.5 rounded-lg border border-[#30323a]">
+              <div className="pointer-events-auto flex items-center bg-[#202127] p-0.5 rounded-lg border border-[#30323c] space-x-0.5 shrink-0">
                 <button
+                  type="button"
                   onClick={() => onToolChange('select')}
-                  title="Object Selection Tool"
-                  className={`p-1 rounded transition cursor-pointer ${
+                  title="Select, Move & Resize Objects (V)"
+                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
                     activeTool === 'select'
-                      ? 'bg-[#30323a] text-white'
+                      ? 'bg-[#323544] text-white shadow-xs'
                       : 'text-neutral-400 hover:text-neutral-200'
                   }`}
                 >
                   <MousePointer className="w-3 h-3" />
+                  <span className="hidden sm:inline">Select</span>
                 </button>
+
                 <button
+                  type="button"
+                  onClick={() => onToolChange('text')}
+                  title="Text Tool: Click anywhere on the PDF page to add selectable, movable, resizable text (T)"
+                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
+                    activeTool === 'text'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  <Type className="w-3 h-3" />
+                  <span className="hidden sm:inline">Text</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onToolChange('image')}
+                  title="Image Tool: Click or drag on the PDF page to insert a selectable, movable, resizable image (I)"
+                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
+                    activeTool === 'image'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  <ImageIcon className="w-3 h-3" />
+                  <span className="hidden sm:inline">Image</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onToolChange('draw')}
+                  title="Freehand Draw Tool: Draw directly on the PDF page to create a selectable, movable, resizable drawing object (D)"
+                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
+                    activeTool === 'draw'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  <PenTool className="w-3 h-3" />
+                  <span className="hidden sm:inline">Draw</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => onToolChange('crop')}
-                  title="Crop Image/Object Tool"
-                  className={`p-1 rounded transition cursor-pointer ${
+                  title="Crop Area Tool: Drag a marquee over any region to crop or copy (C)"
+                  className={`flex items-center space-x-1 px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
                     activeTool === 'crop'
-                      ? 'bg-[#30323a] text-white'
+                      ? 'bg-[#323544] text-white shadow-xs'
                       : 'text-neutral-400 hover:text-neutral-200'
                   }`}
                 >
                   <Crop className="w-3 h-3" />
+                  <span className="hidden md:inline">Crop</span>
                 </button>
               </div>
             )}
 
-            {/* Page Organizer Modal Launcher */}
+            {/* Contextual Inline Settings for Text Tool */}
+            {primaryMode === 'edit' && activeTool === 'text' && (
+              <div className="pointer-events-auto flex items-center space-x-1.5 bg-[#1d2028] border border-blue-500/35 px-2 py-0.5 rounded-lg shrink-0">
+                <select
+                  aria-label="New text font size"
+                  value={textToolFontSize}
+                  onChange={(e) => onChangeTextToolFontSize?.(Number(e.target.value))}
+                  className="bg-[#14161b] text-white text-[11px] font-mono px-1.5 py-0.5 rounded border border-[#323544] outline-none cursor-pointer"
+                >
+                  {[10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48].map((sz) => (
+                    <option key={sz} value={sz}>
+                      {sz}pt
+                    </option>
+                  ))}
+                </select>
+                <label
+                  title="Text Color"
+                  className="w-4 h-4 rounded border border-neutral-500 cursor-pointer shrink-0 overflow-hidden"
+                  style={{ backgroundColor: textToolColor }}
+                >
+                  <input
+                    type="color"
+                    value={textToolColor}
+                    onChange={(e) => onChangeTextToolColor?.(e.target.value)}
+                    className="opacity-0 w-0 h-0"
+                  />
+                </label>
+              </div>
+            )}
+
+            {/* Contextual Inline Settings for Image Tool */}
+            {primaryMode === 'edit' && activeTool === 'image' && (
+              <div className="pointer-events-auto flex items-center space-x-1.5 bg-[#1d2028] border border-blue-500/35 px-2 py-0.5 rounded-lg shrink-0">
+                <button
+                  type="button"
+                  onClick={onTriggerUploadImageTool}
+                  className="flex items-center space-x-1 text-[11px] font-medium text-blue-300 hover:text-white cursor-pointer whitespace-nowrap"
+                >
+                  <FileUp className="w-3 h-3" />
+                  <span>Choose Image...</span>
+                </button>
+              </div>
+            )}
+
+            {/* Contextual Inline Settings for Freehand Draw Tool */}
+            {primaryMode === 'edit' && activeTool === 'draw' && (
+              <div className="pointer-events-auto flex items-center space-x-1.5 bg-[#1d2028] border border-blue-500/35 px-2 py-0.5 rounded-lg shrink-0">
+                <div className="flex items-center space-x-1">
+                  {DRAW_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => onChangeDrawColor?.(c)}
+                      title={`Stroke color ${c}`}
+                      className={`w-3.5 h-3.5 rounded-full border transition cursor-pointer ${
+                        drawColor.toLowerCase() === c.toLowerCase()
+                          ? 'border-white scale-115 ring-1 ring-blue-400'
+                          : 'border-neutral-600 opacity-80 hover:opacity-100'
+                      }`}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                  <label
+                    title="Custom Stroke Color"
+                    className="w-4 h-4 rounded border border-neutral-500 cursor-pointer shrink-0 overflow-hidden ml-0.5"
+                    style={{ backgroundColor: drawColor }}
+                  >
+                    <input
+                      type="color"
+                      value={drawColor}
+                      onChange={(e) => onChangeDrawColor?.(e.target.value)}
+                      className="opacity-0 w-0 h-0"
+                    />
+                  </label>
+                </div>
+                <select
+                  aria-label="Freehand stroke width"
+                  value={drawStrokeWidth}
+                  onChange={(e) => onChangeDrawStrokeWidth?.(Number(e.target.value))}
+                  className="bg-[#14161b] text-white text-[11px] font-mono px-1.5 py-0.5 rounded border border-[#323544] outline-none cursor-pointer"
+                >
+                  {[1, 2, 3, 4, 6, 8, 12].map((w) => (
+                    <option key={w} value={w}>
+                      {w}pt
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Page Organizer Launcher */}
             {onOpenPageOrganizer && (
               <button
+                type="button"
                 onClick={onOpenPageOrganizer}
-                title="Open Page Organizer (Shift+P)"
-                className="pointer-events-auto flex items-center space-x-1 px-2 py-1 bg-[#202126] hover:bg-[#2a2c36] text-neutral-300 hover:text-white border border-[#30323a] rounded text-[11px] font-medium transition cursor-pointer"
+                title="Open Page Organizer"
+                className="pointer-events-auto flex items-center space-x-1 px-2 py-1 bg-[#202127] hover:bg-[#2a2c36] text-neutral-300 hover:text-white border border-[#30323c] rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap shrink-0"
               >
-                <LayoutGrid className="w-3 h-3 text-indigo-400" />
-                <span className="hidden sm:inline">Organizer</span>
+                <LayoutGrid className="w-3 h-3 text-blue-400" />
+                <span className="hidden lg:inline">Organizer</span>
               </button>
             )}
 
             {/* Page Actions Dropdown */}
-            <div className="relative pointer-events-auto" ref={pageMenuRef}>
+            <div className="relative pointer-events-auto shrink-0" ref={pageMenuRef}>
               <button
+                type="button"
                 onClick={() => setIsPageMenuOpen((p) => !p)}
                 title="Page Operations"
-                className="flex items-center space-x-1 px-2 py-1 bg-[#202126] hover:bg-[#2a2c36] text-neutral-300 hover:text-white border border-[#30323a] rounded text-[11px] font-medium transition cursor-pointer"
+                className="flex items-center space-x-1 px-2 py-1 bg-[#202127] hover:bg-[#2a2c36] text-neutral-300 hover:text-white border border-[#30323c] rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap"
               >
                 <span>Page</span>
                 <ChevronDown className="w-2.5 h-2.5 text-neutral-400" />
@@ -434,30 +663,33 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                 <div className="absolute top-full mt-1 left-0 w-44 bg-[#1f2025] border border-[#353742] rounded-lg shadow-xl py-1 z-50 text-[11.5px]">
                   {onRotatePageRight && (
                     <button
+                      type="button"
                       onClick={() => {
                         onRotatePageRight();
                         setIsPageMenuOpen(false);
                       }}
                       className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
                     >
-                      <RotateCw className="w-3.5 h-3.5 text-indigo-400" />
+                      <RotateCw className="w-3.5 h-3.5 text-blue-400" />
                       <span>Rotate Page CW (90°)</span>
                     </button>
                   )}
                   {onRotatePageLeft && (
                     <button
+                      type="button"
                       onClick={() => {
                         onRotatePageLeft();
                         setIsPageMenuOpen(false);
                       }}
                       className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
                     >
-                      <RotateCcw className="w-3.5 h-3.5 text-indigo-400" />
+                      <RotateCcw className="w-3.5 h-3.5 text-blue-400" />
                       <span>Rotate Page CCW (90°)</span>
                     </button>
                   )}
                   {onDuplicatePage && (
                     <button
+                      type="button"
                       onClick={() => {
                         onDuplicatePage();
                         setIsPageMenuOpen(false);
@@ -470,6 +702,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   )}
                   {onOpenAddBlankPage && (
                     <button
+                      type="button"
                       onClick={() => {
                         onOpenAddBlankPage();
                         setIsPageMenuOpen(false);
@@ -482,6 +715,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   )}
                   {onOpenDeletePage && (
                     <button
+                      type="button"
                       onClick={() => {
                         onOpenDeletePage();
                         setIsPageMenuOpen(false);
@@ -497,14 +731,15 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             </div>
 
             {/* Document Tools Menu */}
-            <div className="relative pointer-events-auto" ref={toolsMenuRef}>
+            <div className="relative pointer-events-auto shrink-0" ref={toolsMenuRef}>
               <button
+                type="button"
                 onClick={() => setIsToolsMenuOpen((p) => !p)}
-                title="Document Processing & Enhancements"
-                className="flex items-center space-x-1 px-2 py-1 bg-[#202126] hover:bg-[#2a2c36] text-neutral-300 hover:text-white border border-[#30323a] rounded text-[11px] font-medium transition cursor-pointer"
+                title="Document Tools"
+                className="flex items-center space-x-1 px-2 py-1 bg-[#202127] hover:bg-[#2a2c36] text-neutral-300 hover:text-white border border-[#30323c] rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap"
               >
-                <Wrench className="w-3 h-3 text-indigo-400" />
-                <span className="hidden sm:inline">Tools</span>
+                <Wrench className="w-3 h-3 text-blue-400" />
+                <span className="hidden lg:inline">Tools</span>
                 <ChevronDown className="w-2.5 h-2.5 text-neutral-400" />
               </button>
 
@@ -512,16 +747,17 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                 <div className="absolute top-full mt-1 left-0 w-48 bg-[#1f2025] border border-[#353742] rounded-lg shadow-xl py-1 z-50 text-[11.5px]">
                   {onOpenOcrModal && (
                     <button
+                      type="button"
                       onClick={() => {
                         onOpenOcrModal();
                         setIsToolsMenuOpen(false);
                       }}
                       className="w-full px-3 py-1.5 flex items-center space-x-2 text-neutral-200 hover:bg-[#2b2d38] transition cursor-pointer"
                     >
-                      <ScanText className="w-3.5 h-3.5 text-indigo-400" />
+                      <ScanText className="w-3.5 h-3.5 text-blue-400" />
                       <span>OCR Scanned Text</span>
                       {scannedPageCount > 0 && (
-                        <span className="ml-auto text-[10px] bg-indigo-500/20 text-indigo-300 px-1.5 py-0.2 rounded font-mono">
+                        <span className="ml-auto text-[10px] text-blue-300 font-mono">
                           {scannedPageCount}p
                         </span>
                       )}
@@ -529,6 +765,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   )}
                   {onToggleFindReplace && (
                     <button
+                      type="button"
                       onClick={() => {
                         onToggleFindReplace();
                         setIsToolsMenuOpen(false);
@@ -541,6 +778,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   )}
                   {onOpenWatermarkModal && (
                     <button
+                      type="button"
                       onClick={() => {
                         onOpenWatermarkModal();
                         setIsToolsMenuOpen(false);
@@ -553,6 +791,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   )}
                   {onOpenPageNumberModal && (
                     <button
+                      type="button"
                       onClick={() => {
                         onOpenPageNumberModal();
                         setIsToolsMenuOpen(false);
@@ -565,6 +804,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   )}
                   {onOpenHeaderFooterModal && (
                     <button
+                      type="button"
                       onClick={() => {
                         onOpenHeaderFooterModal();
                         setIsToolsMenuOpen(false);
@@ -579,17 +819,18 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               )}
             </div>
 
-            {/* Same Object Multi-Page Batch Action (when object selected) */}
+            {/* Same Object Multi-Page Batch Action */}
             {hasSelectedObject && onFindSameObject && (
-              <div className="relative pointer-events-auto" ref={sameObjectMenuRef}>
+              <div className="relative pointer-events-auto shrink-0" ref={sameObjectMenuRef}>
                 <button
+                  type="button"
                   onClick={() => setIsSameObjectMenuOpen((p) => !p)}
-                  className="flex items-center space-x-1 px-2 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded text-[11px] font-medium transition cursor-pointer animate-pulse"
+                  className="flex items-center space-x-1 px-2 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded text-[11px] font-medium transition cursor-pointer whitespace-nowrap"
                 >
                   <Sparkles className="w-3 h-3 text-amber-400" />
-                  <span className="hidden sm:inline">Same Object</span>
+                  <span className="hidden xl:inline">Same Object</span>
                   {matchCount > 0 && (
-                    <span className="bg-amber-500/30 text-amber-200 px-1 rounded text-[10px] font-mono">
+                    <span className="text-amber-200 px-1 text-[10px] font-mono tabular-nums">
                       {matchCount}
                     </span>
                   )}
@@ -599,6 +840,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                 {isSameObjectMenuOpen && (
                   <div className="absolute top-full mt-1 left-0 w-52 bg-[#1f2025] border border-[#353742] rounded-lg shadow-xl py-1 z-50 text-[11.5px]">
                     <button
+                      type="button"
                       onClick={() => {
                         onFindSameObject();
                         setIsSameObjectMenuOpen(false);
@@ -610,6 +852,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                     </button>
                     {onHighlightSameObjectMatches && (
                       <button
+                        type="button"
                         onClick={() => {
                           onHighlightSameObjectMatches();
                           setIsSameObjectMenuOpen(false);
@@ -622,6 +865,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                     )}
                     {onReplaceSameObject && (
                       <button
+                        type="button"
                         onClick={() => {
                           onReplaceSameObject();
                           setIsSameObjectMenuOpen(false);
@@ -637,26 +881,27 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               </div>
             )}
 
-            {/* PDF Protection Badge / Launcher */}
+            {/* PDF Protection */}
             {onOpenProtection && (
               <button
+                type="button"
                 onClick={onOpenProtection}
-                title={isProtected ? 'PDF is encrypted with password protection' : 'Protect this PDF with passwords'}
-                className={`pointer-events-auto flex items-center space-x-1 px-2 py-1 rounded text-[11px] border transition cursor-pointer ${
+                title={isProtected ? 'PDF is encrypted with password protection' : 'Protect PDF with passwords'}
+                className={`pointer-events-auto flex items-center space-x-1 px-2 py-1 rounded text-[11px] border transition cursor-pointer whitespace-nowrap shrink-0 ${
                   isProtected
                     ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25'
-                    : 'bg-[#202126] border-[#30323a] text-neutral-300 hover:text-white hover:bg-[#2a2c36]'
+                    : 'bg-[#202127] border-[#30323c] text-neutral-300 hover:text-white hover:bg-[#2a2c36]'
                 }`}
               >
                 {isProtected ? (
                   <>
                     <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                    <span className="font-medium hidden sm:inline">Secured</span>
+                    <span className="font-medium hidden xl:inline">Secured</span>
                   </>
                 ) : (
                   <>
                     <Shield className="w-3 h-3 text-neutral-400" />
-                    <span className="hidden sm:inline">Protect</span>
+                    <span className="hidden xl:inline">Protect</span>
                   </>
                 )}
               </button>
@@ -664,64 +909,91 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
             {/* Zoom Controls */}
             {onZoomChange && (
-              <div className="pointer-events-auto hidden md:flex items-center space-x-0.5 bg-[#202126] px-1 py-0.5 rounded border border-[#30323a]">
+              <div className="pointer-events-auto hidden md:flex items-center space-x-0.5 bg-[#202127] px-1 py-0.5 rounded border border-[#30323c] shrink-0">
                 <button
+                  type="button"
                   onClick={() => onZoomChange(Math.max(0.25, zoom - 0.1))}
-                  title="Zoom Out (Ctrl+-)"
+                  title="Zoom Out"
                   className="p-1 text-neutral-400 hover:text-white transition cursor-pointer"
                 >
                   <ZoomOut className="w-3 h-3" />
                 </button>
-                <span className="px-1 text-[10.5px] font-mono text-neutral-300 w-10 text-center">
+                <span className="px-1 text-[10.5px] font-mono tabular-nums text-neutral-300 w-10 text-center">
                   {Math.round(zoom * 100)}%
                 </span>
                 <button
+                  type="button"
                   onClick={() => onZoomChange(Math.min(3.0, zoom + 0.1))}
-                  title="Zoom In (Ctrl++)"
+                  title="Zoom In"
                   className="p-1 text-neutral-400 hover:text-white transition cursor-pointer"
                 >
                   <ZoomIn className="w-3 h-3" />
                 </button>
                 {onFitWidth && (
                   <button
+                    type="button"
                     onClick={onFitWidth}
                     title="Fit to Width"
-                    className="p-1 text-neutral-400 hover:text-white transition cursor-pointer border-l border-[#30323a] ml-0.5 pl-1"
+                    className="p-1 text-neutral-400 hover:text-white transition cursor-pointer border-l border-[#30323c] ml-0.5 pl-1"
                   >
-                    <Maximize2 className="w-3 h-3" />
+                    <Expand className="w-3 h-3" />
                   </button>
                 )}
               </div>
             )}
           </div>
         ) : (
-          <div data-tauri-drag-region className="text-neutral-500 text-[11.5px] italic">
-            Ready &bull; Drop a PDF or click Open to start editing
+          <div
+            data-tauri-drag-region
+            onDoubleClick={handleToggleMaximize}
+            className="text-neutral-500 text-[11.5px] truncate"
+          >
+            Desktop PDF Workstation — Open or drop a PDF file to begin
           </div>
         )}
       </div>
 
-      {/* ── RIGHT: Export PDF, Inspector Toggle, Shortcuts & Native Window Controls ── */}
+      {/* ── RIGHT: Save / Save As, Inspector Toggle & Native Desktop Window Controls ── */}
       <div className="flex items-center space-x-1 shrink-0 pointer-events-auto">
-        {/* Export PDF Button */}
-        {filename && onExport && (
-          <button
-            onClick={onExport}
-            disabled={isProcessing}
-            title="Export edited & protected PDF document"
-            className="flex items-center space-x-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[11.5px] font-medium shadow-sm transition cursor-pointer disabled:opacity-50"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Export PDF</span>
-          </button>
+        {/* Save & Save As Split Control */}
+        {filename && (onSave || onExport) && (
+          <div className="relative flex items-center" ref={saveMenuRef}>
+            <button
+              type="button"
+              onClick={onSave || onExport}
+              disabled={isProcessing}
+              title={`Save (${filename}) — Ctrl+S`}
+              className="flex items-center space-x-1.5 px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-l text-[11.5px] font-semibold transition cursor-pointer disabled:opacity-50 whitespace-nowrap"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Save</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (onSaveAs) {
+                  onSaveAs();
+                } else {
+                  setIsSaveMenuOpen((p) => !p);
+                }
+              }}
+              disabled={isProcessing}
+              title="Save As... (Choose location or save as new file — Ctrl+Shift+S)"
+              className="flex items-center space-x-1 px-2 py-1 bg-[#1d4ed8] hover:bg-blue-500 text-white border-l border-blue-400/30 rounded-r text-[11.5px] font-medium transition cursor-pointer disabled:opacity-50 whitespace-nowrap"
+            >
+              <FolderDown className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">Save As...</span>
+            </button>
+          </div>
         )}
 
         {/* Shortcuts */}
         {onOpenShortcuts && (
           <button
+            type="button"
             onClick={onOpenShortcuts}
             title="Keyboard Shortcuts"
-            className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-[#282a32] transition cursor-pointer hidden md:block"
+            className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-[#282a32] transition cursor-pointer hidden xl:block"
           >
             <Keyboard className="w-3.5 h-3.5" />
           </button>
@@ -730,12 +1002,13 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         {/* Inspector Toggle */}
         {filename && onToggleInspector && (
           <button
+            type="button"
             onClick={onToggleInspector}
-            title={isInspectorOpen ? 'Hide Properties Inspector' : 'Show Properties Inspector'}
+            title={isInspectorOpen ? 'Hide Inspector Panel' : 'Show Inspector Panel'}
             className={`p-1.5 rounded border transition cursor-pointer ${
               isInspectorOpen
-                ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
-                : 'bg-[#202126] border-[#30323a] text-neutral-400 hover:text-white hover:bg-[#282a32]'
+                ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                : 'bg-[#202127] border-[#30323c] text-neutral-400 hover:text-white hover:bg-[#282a32]'
             }`}
           >
             <PanelRight className="w-3.5 h-3.5" />
@@ -745,36 +1018,58 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         {/* Desktop Window Controls Divider */}
         <div className="w-[1px] h-5 bg-[#2d2f38] mx-1" />
 
-        {/* Minimize Button */}
+        {/* 1. Minimize Button */}
         <button
+          type="button"
           onClick={handleMinimize}
-          title="Minimize"
-          aria-label="Minimize"
-          className="h-8 px-2.5 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-[#2b2c34] rounded transition cursor-pointer"
+          title="Minimize Window"
+          aria-label="Minimize Window"
+          className="h-8 w-8 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-[#2b2d36] rounded transition cursor-pointer"
         >
           <Minus className="w-3.5 h-3.5" />
         </button>
 
-        {/* Maximize / Restore Button */}
+        {/* 2. Maximize / Restore Button */}
         <button
+          type="button"
           onClick={handleToggleMaximize}
-          title={isMaximized ? 'Restore' : 'Maximize'}
-          aria-label={isMaximized ? 'Restore' : 'Maximize'}
-          className="h-8 px-2.5 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-[#2b2c34] rounded transition cursor-pointer"
+          title={effectiveMaximized ? 'Restore Window Size' : 'Maximize Window'}
+          aria-label={effectiveMaximized ? 'Restore Window Size' : 'Maximize Window'}
+          className="h-8 w-8 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-[#2b2d36] rounded transition cursor-pointer"
         >
-          {isMaximized ? (
+          {effectiveMaximized ? (
             <Copy className="w-3.5 h-3.5 rotate-180" />
           ) : (
             <Square className="w-3 h-3" />
           )}
         </button>
 
-        {/* Close Button */}
+        {/* 3. Fullscreen Toggle Button */}
         <button
+          type="button"
+          onClick={handleToggleFullscreen}
+          title={effectiveFullscreen ? 'Exit Fullscreen (F11)' : 'Fullscreen (F11)'}
+          aria-label={effectiveFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+          className={`h-8 w-8 flex items-center justify-center rounded transition cursor-pointer ${
+            effectiveFullscreen
+              ? 'text-blue-400 bg-blue-500/15 hover:bg-blue-500/25'
+              : 'text-neutral-400 hover:text-white hover:bg-[#2b2d36]'
+          }`}
+        >
+          {effectiveFullscreen ? (
+            <Minimize2 className="w-3.5 h-3.5" />
+          ) : (
+            <Maximize2 className="w-3.5 h-3.5" />
+          )}
+        </button>
+
+        {/* 4. Close Button */}
+        <button
+          type="button"
           onClick={handleClose}
           title="Close"
           aria-label="Close"
-          className="h-8 px-3 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-rose-600 rounded transition cursor-pointer"
+          className="h-8 w-8 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-rose-600 rounded transition cursor-pointer"
         >
           <X className="w-3.5 h-3.5" />
         </button>

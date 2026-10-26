@@ -871,7 +871,7 @@ export async function applyModificationsAndExport(
 /**
  * Initiates browser download of a PDF binary.
  */
-export function downloadPdf(bytes: Uint8Array, filename = 'document_edited.pdf'): void {
+export function downloadPdf(bytes: Uint8Array, filename = 'document.pdf'): void {
   const blob = new Blob([new Uint8Array(bytes)], { type: 'application/pdf' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -882,3 +882,113 @@ export function downloadPdf(bytes: Uint8Array, filename = 'document_edited.pdf')
   document.body.removeChild(link);
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
+
+export interface SaveFilePickerResult {
+  saved: boolean;
+  cancelled?: boolean;
+  filename: string;
+  fileHandle?: unknown;
+}
+
+/**
+ * Saves PDF bytes using the native OS File System Access API (`showSaveFilePicker`)
+ * when supported and permitted, or writes to an existing FileSystemFileHandle,
+ * falling back cleanly to `downloadPdf` with the exact target filename when running in a sandboxed frame.
+ */
+export async function savePdfToDestination(
+  bytes: Uint8Array,
+  suggestedName: string,
+  options?: {
+    existingHandle?: unknown;
+    forceSystemPicker?: boolean;
+  }
+): Promise<SaveFilePickerResult> {
+  const safeName = suggestedName.trim()
+    ? suggestedName.trim().toLowerCase().endsWith('.pdf')
+      ? suggestedName.trim()
+      : `${suggestedName.trim()}.pdf`
+    : 'document.pdf';
+
+  // 1. If we already have a writable handle and aren't forcing "Save As" picker:
+  if (
+    options?.existingHandle &&
+    !options.forceSystemPicker &&
+    typeof (options.existingHandle as { createWritable?: unknown }).createWritable === 'function'
+  ) {
+    try {
+      const handle = options.existingHandle as {
+        name?: string;
+        createWritable: () => Promise<{
+          write: (data: Blob) => Promise<void>;
+          close: () => Promise<void>;
+        }>;
+      };
+      const writable = await handle.createWritable();
+      await writable.write(new Blob([new Uint8Array(bytes)], { type: 'application/pdf' }));
+      await writable.close();
+      return {
+        saved: true,
+        filename: handle.name || safeName,
+        fileHandle: options.existingHandle,
+      };
+    } catch {
+      // Fall through to picker / download if permission expired
+    }
+  }
+
+  // 2. If native showSaveFilePicker is requested and available in window:
+  if (
+    options?.forceSystemPicker &&
+    typeof window !== 'undefined' &&
+    'showSaveFilePicker' in window
+  ) {
+    try {
+      const showPicker = (window as unknown as {
+        showSaveFilePicker: (opts: unknown) => Promise<{
+          name: string;
+          createWritable: () => Promise<{
+            write: (data: Blob) => Promise<void>;
+            close: () => Promise<void>;
+          }>;
+        }>;
+      }).showSaveFilePicker;
+
+      const handle = await showPicker({
+        suggestedName: safeName,
+        types: [
+          {
+            description: 'PDF Document (.pdf)',
+            accept: { 'application/pdf': ['.pdf'] },
+          },
+        ],
+      });
+
+      const writable = await handle.createWritable();
+      await writable.write(new Blob([new Uint8Array(bytes)], { type: 'application/pdf' }));
+      await writable.close();
+
+      return {
+        saved: true,
+        filename: handle.name || safeName,
+        fileHandle: handle,
+      };
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return {
+          saved: false,
+          cancelled: true,
+          filename: safeName,
+        };
+      }
+      // SecurityError in cross-origin iframe falls through to direct download with chosen filename
+    }
+  }
+
+  // 3. Standard browser / iframe save with preserved filename
+  downloadPdf(bytes, safeName);
+  return {
+    saved: true,
+    filename: safeName,
+  };
+}
+

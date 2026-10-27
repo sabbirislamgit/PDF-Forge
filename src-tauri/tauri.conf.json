@@ -3,12 +3,14 @@
   "productName": "PDF Forge",
   "version": "1.0.0",
   "identifier": "com.pdfforge.desktop",
+
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"
   },
+
   "app": {
     "windows": [
       {
@@ -16,33 +18,43 @@
         "title": "PDF Forge",
         "width": 1440,
         "height": 900,
-        "minWidth": 800,
-        "minHeight": 600,
-        "resizable": true,
-        "fullscreen": false,
+        "minWidth": 1000,
+        "minHeight": 700,
         "center": true,
-        "decorations": false
+        "resizable": true,
+        "maximizable": true,
+        "minimizable": true,
+        "closable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "visible": true,
+        "focus": true
       }
     ],
     "security": {
       "csp": null
     }
   },
+
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
+
     "icon": [
       "icons/32x32.png",
       "icons/64x64.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons/icon.icns"
     ],
+
     "windows": {
       "nsis": {
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "icons/icon.ico",
+        "displayLanguageSelector": false
       }
     }
   }

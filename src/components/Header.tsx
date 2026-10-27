@@ -90,6 +90,8 @@ interface HeaderProps {
   onOpenPageNumberModal?: () => void;
   onOpenHeaderFooterModal?: () => void;
   onOpenInvertColorsModal?: () => void;
+  onOpenNupModal?: () => void;
+  onOpenBatchCropModal?: () => void;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   isInspectorOpen?: boolean;
@@ -145,6 +147,8 @@ const HeaderComponent: React.FC<HeaderProps> = ({
   onOpenPageNumberModal,
   onOpenHeaderFooterModal,
   onOpenInvertColorsModal,
+  onOpenNupModal,
+  onOpenBatchCropModal,
   isSidebarOpen = true,
   onToggleSidebar,
   isInspectorOpen = true,
@@ -628,6 +632,36 @@ const HeaderComponent: React.FC<HeaderProps> = ({
                       <span className="font-medium">Invert Colors</span>
                     </span>
                     <span className="text-[10px] font-mono text-neutral-500">Dark/Invert</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsToolsMenuOpen(false);
+                      onOpenNupModal?.();
+                    }}
+                    className="w-full px-3 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#282a30] flex items-center justify-between transition cursor-pointer"
+                  >
+                    <span className="flex items-center space-x-2.5">
+                      <LayoutGrid className="w-3.5 h-3.5 text-purple-400" />
+                      <span className="font-medium">N-Up Layout</span>
+                    </span>
+                    <span className="text-[10px] font-mono text-neutral-500">Custom Grid</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsToolsMenuOpen(false);
+                      onOpenBatchCropModal?.();
+                    }}
+                    className="w-full px-3 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#282a30] flex items-center justify-between transition cursor-pointer"
+                  >
+                    <span className="flex items-center space-x-2.5">
+                      <Crop className="w-3.5 h-3.5 text-sky-400" />
+                      <span className="font-medium">Batch Page Crop</span>
+                    </span>
+                    <span className="text-[10px] font-mono text-neutral-500">Multi-Page</span>
                   </button>
                 </div>
               </div>

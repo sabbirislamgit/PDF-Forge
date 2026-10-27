@@ -65,6 +65,14 @@ import { WatermarkModal } from './components/WatermarkModal';
 import { PageNumberModal, formatPageNumberString } from './components/PageNumberModal';
 import { HeaderFooterModal, resolveHeaderFooterTemplate } from './components/HeaderFooterModal';
 import { InvertColorsModal } from './components/InvertColorsModal';
+import { NupLayoutModal } from './components/NupLayoutModal';
+import { generateNupPdf, NupConfig, NupProgressUpdate } from './utils/nupLayout';
+import { BatchPageCropModal } from './components/BatchPageCropModal';
+import {
+  batchCropPdfPages,
+  BatchCropOptions,
+  BatchCropProgressUpdate,
+} from './utils/batchCrop';
 import { EmptyState } from './components/EmptyState';
 import { StatusBar } from './components/StatusBar';
 import { Trash2, Undo2, X, Check, AlertTriangle, Maximize2 } from 'lucide-react';
@@ -265,6 +273,18 @@ export default function App() {
   const [isProcessingInvert, setIsProcessingInvert] = useState<boolean>(false);
   const [invertProgress, setInvertProgress] = useState<InvertProgressUpdate | null>(null);
   const cancelInvertRef = useRef<boolean>(false);
+
+  // N-Up Layout Tool State (Tools -> N-Up Layout)
+  const [isNupModalOpen, setIsNupModalOpen] = useState<boolean>(false);
+  const [isProcessingNup, setIsProcessingNup] = useState<boolean>(false);
+  const [nupProgress, setNupProgress] = useState<NupProgressUpdate | null>(null);
+  const cancelNupRef = useRef<boolean>(false);
+
+  // Batch Page Crop Tool State (Tools -> Batch Page Crop)
+  const [isBatchCropModalOpen, setIsBatchCropModalOpen] = useState<boolean>(false);
+  const [isProcessingBatchCrop, setIsProcessingBatchCrop] = useState<boolean>(false);
+  const [batchCropProgress, setBatchCropProgress] = useState<BatchCropProgressUpdate | null>(null);
+  const cancelBatchCropRef = useRef<boolean>(false);
 
   // Debounce search query for responsive typing across 500+ page documents
   useEffect(() => {
@@ -3014,6 +3034,187 @@ export default function App() {
     cancelInvertRef.current = true;
   }, []);
 
+  // ================= N-UP LAYOUT (MULTIPLE PAGES PER SHEET) =================
+  const handleApplyNupLayout = useCallback(
+    async (config: NupConfig, targetAction: 'apply' | 'download') => {
+      if (!pdfBytes || pdfBytes.length === 0 || isProcessingNup) return;
+
+      setIsProcessingNup(true);
+      cancelNupRef.current = false;
+      setNupProgress({
+        current: 0,
+        total: config.selectedPageIndices.length,
+        sheetNumber: 1,
+        totalSheets: Math.max(
+          1,
+          Math.ceil(config.selectedPageIndices.length / Math.max(1, config.cols * config.rows))
+        ),
+        statusText: 'Preparing document for Custom Grid imposition...',
+        progress: 0,
+      });
+
+      try {
+        // Compile current modifications (drawings, text edits, rotations, blank pages, inverted colors)
+        const compiledBytes = await applyModificationsAndExport(
+          pdfBytes.slice(),
+          modifications,
+          allOriginalObjectsMap,
+          pages,
+          protectionConfig,
+          pdfDocProxy
+        );
+
+        const result = await generateNupPdf(
+          compiledBytes,
+          config,
+          (update) => setNupProgress(update),
+          () => cancelNupRef.current
+        );
+
+        if (cancelNupRef.current) {
+          triggerPageToast('N-Up layout generation cancelled');
+          return;
+        }
+
+        const baseDocName = (filename || 'document.pdf').replace(/\.pdf$/i, '');
+        const pagesPerSheet = config.cols * config.rows;
+        const nupDocName = `${baseDocName}-grid-${config.rows}x${config.cols}.pdf`;
+
+        if (targetAction === 'download') {
+          await savePdfToDestination(result.pdfBytes, nupDocName, {
+            forceSystemPicker: true,
+          });
+          setIsNupModalOpen(false);
+          triggerPageToast(
+            `Exported ${config.rows}×${config.cols} Grid PDF (${result.totalPagesPlaced} pages on ${result.totalSheets} sheets)`
+          );
+        } else {
+          // 'apply': Load new N-Up document into the editor (pushes previous doc to history for undo)
+          await loadPdfFromBytes(result.pdfBytes, nupDocName);
+          setIsNupModalOpen(false);
+          triggerPageToast(
+            `Applied ${config.rows}×${config.cols} Grid Layout (${pagesPerSheet} pages/sheet): ${result.totalPagesPlaced} pages on ${result.totalSheets} ${
+              result.totalSheets === 1 ? 'sheet' : 'sheets'
+            }`
+          );
+        }
+      } catch (err) {
+        if (!cancelNupRef.current) {
+          setErrorToast(
+            err instanceof Error
+              ? `N-Up Layout Error: ${err.message}`
+              : 'Failed to generate N-Up Layout. Please try again.'
+          );
+        }
+      } finally {
+        setIsProcessingNup(false);
+        setNupProgress(null);
+      }
+    },
+    [
+      pdfBytes,
+      isProcessingNup,
+      modifications,
+      allOriginalObjectsMap,
+      pages,
+      protectionConfig,
+      pdfDocProxy,
+      filename,
+      triggerPageToast,
+      loadPdfFromBytes,
+    ]
+  );
+
+  const handleCancelNup = useCallback(() => {
+    cancelNupRef.current = true;
+  }, []);
+
+  // ================= BATCH PAGE CROP =================
+  const handleApplyBatchCrop = useCallback(
+    async (options: BatchCropOptions) => {
+      if (!pdfBytes || pdfBytes.length === 0 || isProcessingBatchCrop) return;
+
+      setIsProcessingBatchCrop(true);
+      cancelBatchCropRef.current = false;
+      setBatchCropProgress({
+        current: 0,
+        total: pages.length,
+        pageNumber: options.referencePageIndex + 1,
+        statusText: 'Preparing pages for batch cropping...',
+        progress: 0,
+      });
+
+      try {
+        // Compile current modifications (drawings, text edits, rotations, blank pages) first
+        const compiledBytes = await applyModificationsAndExport(
+          pdfBytes.slice(),
+          modifications,
+          allOriginalObjectsMap,
+          pages,
+          protectionConfig,
+          pdfDocProxy
+        );
+
+        const result = await batchCropPdfPages(
+          compiledBytes,
+          pages,
+          options,
+          (update) => setBatchCropProgress(update),
+          () => cancelBatchCropRef.current
+        );
+
+        if (cancelBatchCropRef.current) {
+          triggerPageToast('Batch crop cancelled');
+          return;
+        }
+
+        if (result.croppedPageCount > 0) {
+          const baseDocName = (filename || 'document.pdf').replace(/\.pdf$/i, '');
+          const croppedDocName = `${baseDocName}-cropped.pdf`;
+
+          // Load the newly cropped PDF into editor (pushes previous state to undo history)
+          await loadPdfFromBytes(result.pdfBytes, croppedDocName);
+          setIsBatchCropModalOpen(false);
+          triggerPageToast(
+            `Batch cropped ${result.croppedPageCount} ${
+              result.croppedPageCount === 1 ? 'page' : 'pages'
+            } successfully (Undo with Ctrl+Z)`
+          );
+        } else {
+          setIsBatchCropModalOpen(false);
+          triggerPageToast('No pages were cropped (check page size filters)');
+        }
+      } catch (err) {
+        if (!cancelBatchCropRef.current) {
+          setErrorToast(
+            err instanceof Error
+              ? `Batch Crop Error: ${err.message}`
+              : 'Failed to crop pages. Please try again.'
+          );
+        }
+      } finally {
+        setIsProcessingBatchCrop(false);
+        setBatchCropProgress(null);
+      }
+    },
+    [
+      pdfBytes,
+      isProcessingBatchCrop,
+      modifications,
+      allOriginalObjectsMap,
+      pages,
+      protectionConfig,
+      pdfDocProxy,
+      filename,
+      triggerPageToast,
+      loadPdfFromBytes,
+    ]
+  );
+
+  const handleCancelBatchCrop = useCallback(() => {
+    cancelBatchCropRef.current = true;
+  }, []);
+
   // ================= SAVE & SAVE AS WORKFLOW =================
   // 1. Save (Preserves original filename by default, writes to existing file handle or prompts location)
   const handleSavePdf = useCallback(async () => {
@@ -3409,6 +3610,8 @@ export default function App() {
         onOpenPageNumberModal={() => setIsPageNumberModalOpen(true)}
         onOpenHeaderFooterModal={() => setIsHeaderFooterModalOpen(true)}
         onOpenInvertColorsModal={() => setIsInvertColorsModalOpen(true)}
+        onOpenNupModal={() => setIsNupModalOpen(true)}
+        onOpenBatchCropModal={() => setIsBatchCropModalOpen(true)}
         invertedPageCount={invertedPageCount}
         onToggleSidebar={() => {
           setIsSidebarOpen((prev) => {
@@ -3794,6 +3997,33 @@ export default function App() {
         onApplyInvertColors={handleApplyInvertColors}
         onCancelInvert={handleCancelInvert}
         onUndoLastAction={handleUndo}
+      />
+
+      {/* N-Up Layout Modal (Tools -> N-Up Layout) */}
+      <NupLayoutModal
+        isOpen={isNupModalOpen}
+        pages={pages}
+        currentPageIndex={activePageIndex}
+        filename={filename}
+        isProcessing={isProcessingNup}
+        progress={nupProgress}
+        onClose={() => setIsNupModalOpen(false)}
+        onApplyNupLayout={handleApplyNupLayout}
+        onCancelNupProcess={handleCancelNup}
+      />
+
+      {/* Batch Page Crop Modal (Tools -> Batch Page Crop) */}
+      <BatchPageCropModal
+        isOpen={isBatchCropModalOpen}
+        pages={pages}
+        currentPageIndex={activePageIndex}
+        pdfDocProxy={pdfDocProxy}
+        filename={filename}
+        isProcessing={isProcessingBatchCrop}
+        progress={batchCropProgress}
+        onClose={() => setIsBatchCropModalOpen(false)}
+        onApplyBatchCrop={handleApplyBatchCrop}
+        onCancelProcess={handleCancelBatchCrop}
       />
 
       {/* Close Unsaved Document Confirmation Modal */}

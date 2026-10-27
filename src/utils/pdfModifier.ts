@@ -223,13 +223,22 @@ function drawImageWithCenterRotation(
 }
 
 /**
- * Determines whether a text object requires 300 DPI shaped canvas rendering
- * (e.g. Unicode Bengali / non-WinAnsi characters, Bengali fonts, underline, custom letterSpacing, or rotation).
+ * Determines whether a text object requires shaped canvas rendering
+ * (specifically for complex Unicode scripts like Bengali, Hindi, Arabic, etc. that require
+ * OpenType/HarfBuzz glyph shaping or are outside standard PDF WinAnsi font encodings).
+ *
+ * Standard Latin, numerical, and Western European text is kept as 100% pure PDF vector
+ * text (even when rotated, underlined, or with custom spacing/alignment), ensuring infinite
+ * sharpness, selectable text, and visual identity with the original document.
  */
 function shouldUseShapedCanvasForText(opts: TextRenderOptions): boolean {
   if (typeof document === 'undefined') return false;
-  // Any non-ASCII character (including Bengali \u0980-\u09FF)
-  if (/[^\x09\x0A\x0D\x20-\x7E]/.test(opts.text)) return true;
+
+  // Characters outside WinAnsi encoding (e.g. Bengali \u0980-\u09FF, Devanagari, Arabic, CJK, Emoji)
+  // StandardFonts in PDF support Latin-1 / WinAnsi characters (0x20-0xFF)
+  if (/[^\x09\x0A\x0D\x20-\xFF]/.test(opts.text)) return true;
+
+  // Check for complex script font families that require browser OpenType/HarfBuzz font shaping
   const fam = (opts.fontFamily || '').toLowerCase();
   if (
     fam.includes('solaiman') ||
@@ -242,21 +251,19 @@ function shouldUseShapedCanvasForText(opts: TextRenderOptions): boolean {
   ) {
     return true;
   }
-  if (opts.underline) return true;
-  if (opts.letterSpacing && Math.abs(opts.letterSpacing) > 0.05) return true;
-  if (opts.lineHeight && Math.abs(opts.lineHeight - 1.22) > 0.05) return true;
-  if (opts.rotation && opts.rotation % 360 !== 0) return true;
+
+  // All standard Latin/ASCII text is rendered using pure PDF vector primitives
   return false;
 }
 
 /**
- * Renders rich/Unicode/Bengali text at 300 DPI using the browser's native OpenType/HarfBuzz
- * text shaping engine so Bengali conjuncts (যুক্তাক্ষর), vowel matras, underlines, letter spacing,
- * and line height are preserved with 100% visual fidelity in any PDF viewer.
+ * Renders rich/Unicode/Bengali text at ultra-high resolution (432 DPI / 6.0x scale) using
+ * the browser's native OpenType/HarfBuzz text shaping engine so Bengali conjuncts (যুক্তাক্ষর),
+ * vowel matras, underlines, letter spacing, and line height are preserved with 100% visual fidelity.
  */
 async function renderRichTextToHighResPng(
   opts: TextRenderOptions,
-  dpiScale = 4.167 // 300 DPI (300 / 72)
+  dpiScale = 6.0 // 432 DPI (432 / 72 = 6.0) for razor-sharp text
 ): Promise<string> {
   if (typeof document === 'undefined') return '';
 
@@ -390,6 +397,22 @@ function drawFormattedTextBox(
   const lines = wrapTextLines(safeText, font, fontSize, bounds.width);
   const lineHeight = fontSize * lineHeightMultiplier;
 
+  const normRot = opts.rotation ? ((opts.rotation % 360) + 360) % 360 : 0;
+  const pdfAngle = normRot ? -normRot : 0;
+  const rad = (pdfAngle * Math.PI) / 180;
+  const cx = bounds.x + bounds.width / 2;
+  const cy = bounds.y + bounds.height / 2;
+
+  const transformPoint = (px: number, py: number) => {
+    if (!normRot) return { x: px, y: py };
+    const dx = px - cx;
+    const dy = py - cy;
+    return {
+      x: cx + dx * Math.cos(rad) - dy * Math.sin(rad),
+      y: cy + dx * Math.sin(rad) + dy * Math.cos(rad),
+    };
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
@@ -419,9 +442,7 @@ function drawFormattedTextBox(
 
     if (y < bounds.y - fontSize * 0.5 && i > 0) break;
 
-    const pdfAngle = opts.rotation ? -opts.rotation : 0;
-
-    if (letterSpacing && Math.abs(letterSpacing) > 0.05 && !pdfAngle) {
+    if (letterSpacing && Math.abs(letterSpacing) > 0.05 && !normRot) {
       let cursorX = x;
       for (const ch of line) {
         page.drawText(ch, {
@@ -441,22 +462,25 @@ function drawFormattedTextBox(
         cursorX += chW + letterSpacing;
       }
     } else {
+      const pt = transformPoint(x, y);
       page.drawText(line, {
-        x,
-        y,
+        x: pt.x,
+        y: pt.y,
         size: fontSize,
         font,
         color,
         opacity: safeOpacity,
-        rotate: pdfAngle ? degrees(pdfAngle) : undefined,
+        rotate: normRot ? degrees(pdfAngle) : undefined,
       });
     }
 
     if (opts.underline) {
       const underlineY = y - fontSize * 0.12;
+      const uStart = transformPoint(x, underlineY);
+      const uEnd = transformPoint(x + lineWidth, underlineY);
       page.drawLine({
-        start: { x, y: underlineY },
-        end: { x: x + lineWidth, y: underlineY },
+        start: uStart,
+        end: uEnd,
         thickness: Math.max(0.75, fontSize * 0.06),
         color,
         opacity: safeOpacity,
@@ -481,7 +505,21 @@ export async function applyModificationsAndExport(
   const srcPdfDoc = await PDFDocument.load(originalPdfBytes, { ignoreEncryption: true });
   const srcPageCount = srcPdfDoc.getPageCount();
 
-  const targetPdfDoc = pages ? await PDFDocument.create() : srcPdfDoc;
+  // Determine whether document structure (page count, sequence, blank pages, inverted colors) is unchanged.
+  // When unchanged, modifying the source document in-place avoids document recreation, perfectly preserving
+  // 100% of the original PDF's catalog, metadata, page resources, xref table structure, fonts, and vector streams.
+  const canModifyInPlace = Boolean(
+    !pages ||
+    (pages.length === srcPageCount &&
+      pages.every(
+        (p, i) =>
+          p.originalPageIndex === i &&
+          !p.isBlankPage &&
+          !p.isColorInverted
+      ))
+  );
+
+  let targetPdfDoc: PDFDocument;
 
   // Lazily load pdf.js proxy only if needed for inverted pages and not already provided
   let localPdfDocProxy: pdfjsLib.PDFDocumentProxy | null = pdfDocProxy || null;
@@ -498,71 +536,114 @@ export async function applyModificationsAndExport(
     }
   };
 
-  if (pages) {
-    for (let i = 0; i < pages.length; i++) {
-      const pInfo = pages[i];
-      const isBlank =
-        pInfo.isBlankPage ||
-        pInfo.originalPageIndex === null ||
-        pInfo.originalPageIndex === undefined ||
-        pInfo.originalPageIndex < 0 ||
-        pInfo.originalPageIndex >= srcPageCount;
+  if (canModifyInPlace) {
+    targetPdfDoc = srcPdfDoc;
 
-      if (isBlank) {
-        const pageW = Math.max(50, pInfo.width || 595.28);
-        const pageH = Math.max(50, pInfo.height || 841.89);
-        const blankPage = targetPdfDoc.addPage([pageW, pageH]);
-
-        if (pInfo.backgroundColor && pInfo.backgroundColor !== 'transparent') {
-          blankPage.drawRectangle({
-            x: 0,
-            y: 0,
-            width: pageW,
-            height: pageH,
-            color: parseHexColorToRgb(pInfo.backgroundColor),
-          });
+    if (pages) {
+      for (let i = 0; i < pages.length; i++) {
+        const pInfo = pages[i];
+        if (pInfo.rotation && pInfo.rotation % 360 !== 0) {
+          const page = targetPdfDoc.getPage(i);
+          const existingAngle = page.getRotation().angle || 0;
+          page.setRotation(degrees((existingAngle + pInfo.rotation) % 360));
         }
-      } else if (pInfo.isColorInverted) {
-        // Permanently invert page colors (background, text, images, vector graphics)
-        // using pdf.js for high-resolution rendering and pdf-lib for embedding at exact original page dimensions
-        const pageW = Math.max(50, pInfo.width || 595.28);
-        const pageH = Math.max(50, pInfo.height || 841.89);
-        const invertedPage = targetPdfDoc.addPage([pageW, pageH]);
+      }
+    }
+  } else {
+    targetPdfDoc = await PDFDocument.create();
 
-        // Fill black fallback background first
-        invertedPage.drawRectangle({
-          x: 0,
-          y: 0,
-          width: pageW,
-          height: pageH,
-          color: rgb(0, 0, 0),
-        });
+    // Preserve original document metadata across structural modifications
+    try {
+      const title = srcPdfDoc.getTitle();
+      if (title) targetPdfDoc.setTitle(title);
+      const author = srcPdfDoc.getAuthor();
+      if (author) targetPdfDoc.setAuthor(author);
+      const subject = srcPdfDoc.getSubject();
+      if (subject) targetPdfDoc.setSubject(subject);
+      const keywords = srcPdfDoc.getKeywords();
+      if (keywords) {
+        const kwArray = keywords.includes(',')
+          ? keywords.split(',').map((k) => k.trim()).filter(Boolean)
+          : keywords.split(/\s+/).filter(Boolean);
+        targetPdfDoc.setKeywords(kwArray);
+      }
+      const producer = srcPdfDoc.getProducer();
+      if (producer) targetPdfDoc.setProducer(producer);
+      const creator = srcPdfDoc.getCreator();
+      if (creator) targetPdfDoc.setCreator(creator);
+      const cDate = srcPdfDoc.getCreationDate();
+      if (cDate) targetPdfDoc.setCreationDate(cDate);
+      targetPdfDoc.setModificationDate(new Date());
+    } catch {
+      // Ignore metadata copy errors
+    }
 
-        const proxy = await ensurePdfDocProxy();
-        if (proxy) {
-          const invertedDataUrl = await renderInvertedPdfPageHighRes(
-            proxy,
-            pInfo.originalPageIndex! + 1,
-            pInfo.rotation || 0,
-            pInfo.invertDpiScale || 3.0
-          );
-          if (invertedDataUrl) {
-            const imgBytes = dataUrlToUint8Array(invertedDataUrl);
-            const embeddedInvertedImg = await targetPdfDoc.embedPng(imgBytes);
-            invertedPage.drawImage(embeddedInvertedImg, {
+    if (pages) {
+      for (let i = 0; i < pages.length; i++) {
+        const pInfo = pages[i];
+        const isBlank =
+          pInfo.isBlankPage ||
+          pInfo.originalPageIndex === null ||
+          pInfo.originalPageIndex === undefined ||
+          pInfo.originalPageIndex < 0 ||
+          pInfo.originalPageIndex >= srcPageCount;
+
+        if (isBlank) {
+          const pageW = Math.max(50, pInfo.width || 595.28);
+          const pageH = Math.max(50, pInfo.height || 841.89);
+          const blankPage = targetPdfDoc.addPage([pageW, pageH]);
+
+          if (pInfo.backgroundColor && pInfo.backgroundColor !== 'transparent') {
+            blankPage.drawRectangle({
               x: 0,
               y: 0,
               width: pageW,
               height: pageH,
+              color: parseHexColorToRgb(pInfo.backgroundColor),
             });
           }
-        }
-      } else {
-        const [copiedPage] = await targetPdfDoc.copyPages(srcPdfDoc, [pInfo.originalPageIndex!]);
-        const addedPage = targetPdfDoc.addPage(copiedPage);
-        if (pInfo.rotation && pInfo.rotation % 360 !== 0) {
-          const existingAngle = addedPage.getRotation().angle || 0;
-          addedPage.setRotation(degrees((existingAngle + pInfo.rotation) % 360));
+        } else if (pInfo.isColorInverted) {
+          // Permanently invert page colors (background, text, images, vector graphics)
+          // using pdf.js for high-resolution rendering and pdf-lib for embedding at exact original page dimensions
+          const pageW = Math.max(50, pInfo.width || 595.28);
+          const pageH = Math.max(50, pInfo.height || 841.89);
+          const invertedPage = targetPdfDoc.addPage([pageW, pageH]);
+
+          // Fill black fallback background first
+          invertedPage.drawRectangle({
+            x: 0,
+            y: 0,
+            width: pageW,
+            height: pageH,
+            color: rgb(0, 0, 0),
+          });
+
+          const proxy = await ensurePdfDocProxy();
+          if (proxy) {
+            const invertedDataUrl = await renderInvertedPdfPageHighRes(
+              proxy,
+              pInfo.originalPageIndex! + 1,
+              pInfo.rotation || 0,
+              pInfo.invertDpiScale || 3.0
+            );
+            if (invertedDataUrl) {
+              const imgBytes = dataUrlToUint8Array(invertedDataUrl);
+              const embeddedInvertedImg = await targetPdfDoc.embedPng(imgBytes);
+              invertedPage.drawImage(embeddedInvertedImg, {
+                x: 0,
+                y: 0,
+                width: pageW,
+                height: pageH,
+              });
+            }
+          }
+        } else {
+          const [copiedPage] = await targetPdfDoc.copyPages(srcPdfDoc, [pInfo.originalPageIndex!]);
+          const addedPage = targetPdfDoc.addPage(copiedPage);
+          if (pInfo.rotation && pInfo.rotation % 360 !== 0) {
+            const existingAngle = addedPage.getRotation().angle || 0;
+            addedPage.setRotation(degrees((existingAngle + pInfo.rotation) % 360));
+          }
         }
       }
     }
@@ -630,7 +711,7 @@ export async function applyModificationsAndExport(
     if (!textOpts.text || !textOpts.text.trim()) return;
 
     if (shouldUseShapedCanvasForText(textOpts)) {
-      const shapedPng = await renderRichTextToHighResPng(textOpts, 4.167);
+      const shapedPng = await renderRichTextToHighResPng(textOpts, 6.0);
       if (shapedPng) {
         try {
           const img = await getOrEmbedImage(shapedPng);
@@ -654,7 +735,17 @@ export async function applyModificationsAndExport(
 
   for (let pageIdx = 0; pageIdx < pageCount; pageIdx++) {
     const pageMods = modifications[pageIdx];
-    if (!pageMods) continue;
+    const hasPageEdits = Boolean(
+      pageMods && (
+        (pageMods.removedObjectIds && pageMods.removedObjectIds.length > 0) ||
+        (pageMods.replacedObjects && pageMods.replacedObjects.length > 0) ||
+        (pageMods.pastedObjects && pageMods.pastedObjects.length > 0) ||
+        (pageMods.annotations && pageMods.annotations.length > 0)
+      )
+    );
+
+    // Completely skip unmodified pages to ensure original page content streams remain 100% untouched
+    if (!hasPageEdits || !pageMods) continue;
 
     const page = targetPdfDoc.getPage(pageIdx);
     const { width: pageWidth, height: pageHeight } = page.getSize();
@@ -672,89 +763,112 @@ export async function applyModificationsAndExport(
         ? '#000000'
         : '#ffffff';
 
-
     // 1. Process REMOVALS: Cover original object bounds with local or page background
-    for (const removedId of pageMods.removedObjectIds) {
-      const origObj = allDocumentObjects.get(removedId);
-      if (!origObj) continue;
+    if (pageMods.removedObjectIds && pageMods.removedObjectIds.length > 0) {
+      for (const removedId of pageMods.removedObjectIds) {
+        const origObj = allDocumentObjects.get(removedId);
+        if (!origObj) continue;
 
-      const baseBounds = unrotateRectToBaseSpace(
-        origObj.bounds,
-        curViewW,
-        curViewH,
-        appliedRotation
-      );
-      const coverColor = parseHexColorToRgb(origObj.backgroundColor || defaultPageBgHex);
+        const baseBounds = unrotateRectToBaseSpace(
+          origObj.bounds,
+          curViewW,
+          curViewH,
+          appliedRotation
+        );
+        const coverColor = parseHexColorToRgb(origObj.backgroundColor || defaultPageBgHex);
 
-      page.drawRectangle({
-        x: Math.max(0, baseBounds.x - 1),
-        y: Math.max(0, baseBounds.y - 1),
-        width: Math.min(pageWidth - baseBounds.x, baseBounds.width + 2),
-        height: Math.min(pageHeight - baseBounds.y, baseBounds.height + 2),
-        color: coverColor,
-      });
+        // Precise sub-pixel micro-margin (0.25 pt) to avoid clipping neighboring characters or graphics
+        const pad = 0.25;
+        const rx = Math.max(0, baseBounds.x - pad);
+        const ry = Math.max(0, baseBounds.y - pad);
+        const rw = Math.min(pageWidth - rx, baseBounds.width + pad * 2);
+        const rh = Math.min(pageHeight - ry, baseBounds.height + pad * 2);
+
+        page.drawRectangle({
+          x: rx,
+          y: ry,
+          width: rw,
+          height: rh,
+          color: coverColor,
+        });
+      }
     }
 
     // 2. Process REPLACEMENTS: Cover old object, then draw replacement preserving bounds, rotation, opacity & formatting
-    for (const replaced of pageMods.replacedObjects) {
-      const origObj = allDocumentObjects.get(replaced.originalObjectId);
-      const rawBounds = replaced.bounds || (origObj ? origObj.bounds : null);
-      if (!rawBounds) continue;
+    if (pageMods.replacedObjects && pageMods.replacedObjects.length > 0) {
+      for (const replaced of pageMods.replacedObjects) {
+        const origObj = allDocumentObjects.get(replaced.originalObjectId);
+        const rawBounds = replaced.bounds || (origObj ? origObj.bounds : null);
+        if (!rawBounds) continue;
 
-      const bounds = unrotateRectToBaseSpace(rawBounds, curViewW, curViewH, appliedRotation);
-      const coverColor = parseHexColorToRgb(origObj?.backgroundColor || defaultPageBgHex);
-      const repRotation = replaced.rotation ?? replaced.replacement.rotation ?? origObj?.rotation ?? 0;
-      const repOpacity = replaced.opacity ?? replaced.replacement.opacity ?? origObj?.opacity ?? 1;
+        const bounds = unrotateRectToBaseSpace(rawBounds, curViewW, curViewH, appliedRotation);
+        const coverColor = parseHexColorToRgb(origObj?.backgroundColor || defaultPageBgHex);
+        const repRotation = replaced.rotation ?? replaced.replacement.rotation ?? origObj?.rotation ?? 0;
+        const repOpacity = replaced.opacity ?? replaced.replacement.opacity ?? origObj?.opacity ?? 1;
 
-      page.drawRectangle({
-        x: Math.max(0, bounds.x - 1),
-        y: Math.max(0, bounds.y - 1),
-        width: Math.min(pageWidth - bounds.x, bounds.width + 2),
-        height: Math.min(pageHeight - bounds.y, bounds.height + 2),
-        color: coverColor,
-      });
+        const pad = 0.25;
+        const rx = Math.max(0, bounds.x - pad);
+        const ry = Math.max(0, bounds.y - pad);
+        const rw = Math.min(pageWidth - rx, bounds.width + pad * 2);
+        const rh = Math.min(pageHeight - ry, bounds.height + pad * 2);
 
-      if (replaced.replacement.type === 'image' && replaced.replacement.imageDataUrl) {
-        try {
-          const img = await getOrEmbedImage(replaced.replacement.imageDataUrl);
-          drawImageWithCenterRotation(page, img, bounds, repRotation, repOpacity);
-        } catch {
-          // Skip invalid replacement image data
-        }
-      } else if (replaced.replacement.type === 'text' && replaced.replacement.text) {
-        await renderTextObjectOntoPage(page, {
-          text: replaced.replacement.text,
-          bounds,
-          fontFamily: replaced.replacement.fontFamily || origObj?.fontFamily,
-          fontSize: replaced.replacement.fontSize || origObj?.fontSize || 12,
-          fontWeight: replaced.replacement.fontWeight || origObj?.fontWeight || 'bold',
-          fontStyle: replaced.replacement.fontStyle || origObj?.fontStyle,
-          underline: replaced.replacement.underline ?? origObj?.underline,
-          textAlign: replaced.replacement.textAlign || origObj?.textAlign || 'center',
-          letterSpacing: replaced.replacement.letterSpacing ?? origObj?.letterSpacing,
-          lineHeight: replaced.replacement.lineHeight ?? origObj?.lineHeight,
-          color: replaced.replacement.color || origObj?.color || '#111827',
-          rotation: repRotation,
-          opacity: repOpacity,
+        page.drawRectangle({
+          x: rx,
+          y: ry,
+          width: rw,
+          height: rh,
+          color: coverColor,
         });
+
+        if (replaced.replacement.type === 'image' && replaced.replacement.imageDataUrl) {
+          try {
+            const img = await getOrEmbedImage(replaced.replacement.imageDataUrl);
+            drawImageWithCenterRotation(page, img, bounds, repRotation, repOpacity);
+          } catch {
+            // Skip invalid replacement image data
+          }
+        } else if (replaced.replacement.type === 'text' && replaced.replacement.text) {
+          await renderTextObjectOntoPage(page, {
+            text: replaced.replacement.text,
+            bounds,
+            fontFamily: replaced.replacement.fontFamily || origObj?.fontFamily,
+            fontSize: replaced.replacement.fontSize || origObj?.fontSize || 12,
+            fontWeight: replaced.replacement.fontWeight || origObj?.fontWeight || 'bold',
+            fontStyle: replaced.replacement.fontStyle || origObj?.fontStyle,
+            underline: replaced.replacement.underline ?? origObj?.underline,
+            textAlign: replaced.replacement.textAlign || origObj?.textAlign || 'center',
+            letterSpacing: replaced.replacement.letterSpacing ?? origObj?.letterSpacing,
+            lineHeight: replaced.replacement.lineHeight ?? origObj?.lineHeight,
+            color: replaced.replacement.color || origObj?.color || '#111827',
+            rotation: repRotation,
+            opacity: repOpacity,
+          });
+        }
       }
     }
 
     // 3. Process PASTED / MOVED / EDITED / OCR / WATERMARK / PAGE NUMBER / HEADER-FOOTER OBJECTS
-    for (const pasted of pageMods.pastedObjects) {
-      const bounds = unrotateRectToBaseSpace(pasted.bounds, curViewW, curViewH, appliedRotation);
+    if (pageMods.pastedObjects && pageMods.pastedObjects.length > 0) {
+      for (const pasted of pageMods.pastedObjects) {
+        const bounds = unrotateRectToBaseSpace(pasted.bounds, curViewW, curViewH, appliedRotation);
 
-      // If this object requires erasing underlying scanned text (e.g. OCR extracted text), draw cover rectangle first
-      if (pasted.forceBackgroundCover) {
-        const coverColor = parseHexColorToRgb(pasted.backgroundColor || defaultPageBgHex);
-        page.drawRectangle({
-          x: Math.max(0, bounds.x - 1),
-          y: Math.max(0, bounds.y - 1),
-          width: Math.min(pageWidth - bounds.x, bounds.width + 2),
-          height: Math.min(pageHeight - bounds.y, bounds.height + 2),
-          color: coverColor,
-        });
-      }
+        // If this object requires erasing underlying scanned text (e.g. OCR extracted text), draw cover rectangle first
+        if (pasted.forceBackgroundCover) {
+          const coverColor = parseHexColorToRgb(pasted.backgroundColor || defaultPageBgHex);
+          const pad = 0.25;
+          const rx = Math.max(0, bounds.x - pad);
+          const ry = Math.max(0, bounds.y - pad);
+          const rw = Math.min(pageWidth - rx, bounds.width + pad * 2);
+          const rh = Math.min(pageHeight - ry, bounds.height + pad * 2);
+
+          page.drawRectangle({
+            x: rx,
+            y: ry,
+            width: rw,
+            height: rh,
+            color: coverColor,
+          });
+        }
 
       if (pasted.type === 'image' && pasted.imageDataUrl) {
         try {
@@ -787,6 +901,7 @@ export async function applyModificationsAndExport(
         });
       }
     }
+  }
 
     // 4. Process ANNOTATIONS: Sticky Notes, Highlights, Underlines, Strikeouts, Free Text, Rects, Circles, Arrows, Pencil
     if (pageMods.annotations && pageMods.annotations.length > 0) {

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   PDFObject,
   ObjectMatch,
@@ -9,6 +9,7 @@ import {
 import { ToolMode } from './Header';
 import { TextObjectUpdates } from './PDFCanvasViewer';
 import { getCssFontStack } from '../utils/pdfModifier';
+import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import {
   Copy,
   ClipboardPaste,
@@ -33,6 +34,9 @@ import {
   Eye,
   MousePointer,
   PenTool,
+  Keyboard,
+  Sliders,
+  Zap,
 } from 'lucide-react';
 
 interface ObjectInspectorProps {
@@ -129,6 +133,7 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
   const isEditingInline = Boolean(
     selectedObject && editingTextObjectId === selectedObject.id
   );
+  const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
 
   const handleStartResize = (e: React.MouseEvent) => {
     if (!onWidthChange) return;
@@ -207,11 +212,107 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
           </div>
         </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-5">
-        {/* ================= SECTION 1: SELECTED OBJECT ================= */}
-        {selectedObject ? (
-          <div className="space-y-4">
-            {/* Object Header & Type */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* ================= 1. ACTIVE TOOL ================= */}
+        <div className="bg-[#1e2027] p-3.5 rounded-xl border border-[#2c2f3a] space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-white flex items-center space-x-1.5">
+              <MousePointer className="w-3.5 h-3.5 text-blue-400" />
+              <span>Active Tool</span>
+            </span>
+            <span className="text-[10px] font-mono uppercase bg-blue-950/60 border border-blue-800/60 text-blue-400 px-1.5 py-0.5 rounded font-semibold">
+              {activeTool}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              type="button"
+              onClick={() => onSetTool('select')}
+              className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
+                activeTool === 'select'
+                  ? 'bg-[#0265dc] text-white shadow-xs'
+                  : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
+              }`}
+            >
+              <MousePointer className="w-3.5 h-3.5" />
+              <span>Select</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSetTool('crop')}
+              className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
+                activeTool === 'crop'
+                  ? 'bg-[#0265dc] text-white shadow-xs'
+                  : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
+              }`}
+            >
+              <CropIcon className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Crop</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSetTool('text')}
+              className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
+                activeTool === 'text'
+                  ? 'bg-[#0265dc] text-white shadow-xs'
+                  : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
+              }`}
+            >
+              <TypeIcon className="w-3.5 h-3.5 text-amber-400" />
+              <span>Text</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSetTool('image')}
+              className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
+                activeTool === 'image'
+                  ? 'bg-[#0265dc] text-white shadow-xs'
+                  : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
+              }`}
+            >
+              <ImageIcon className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Image</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSetTool('draw')}
+              className={`col-span-2 p-2 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1.5 transition duration-150 cursor-pointer ${
+                activeTool === 'draw'
+                  ? 'bg-[#0265dc] text-white shadow-xs'
+                  : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
+              }`}
+            >
+              <PenTool className="w-3.5 h-3.5 text-rose-400" />
+              <span>Freehand Draw</span>
+            </button>
+          </div>
+
+          <p className="text-[11px] text-neutral-400 leading-normal">
+            {activeTool === 'crop'
+              ? 'Drag a rectangle on any page to crop or copy that region.'
+              : activeTool === 'text'
+              ? 'Click anywhere on a PDF page to add a movable, resizable text box.'
+              : activeTool === 'image'
+              ? 'Click on a page or drop an image file to place a resizable image.'
+              : activeTool === 'draw'
+              ? 'Draw continuously directly on the page. Press Esc or select another tool to exit Draw mode.'
+              : 'Click any object to move/resize, or double-click any text to edit inline.'}
+          </p>
+        </div>
+
+        {/* ================= 2. PROPERTIES (dynamic based on selected object) ================= */}
+        <div className="space-y-2">
+          <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wide flex items-center space-x-1.5">
+            <Sliders className="w-3.5 h-3.5 text-blue-400" />
+            <span>Properties</span>
+          </span>
+
+          {selectedObject ? (
             <div className="bg-[#252526] p-3 rounded-xl border border-[#383838] space-y-3 shadow-xs">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
@@ -651,12 +752,28 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
                 </div>
               </div>
             </div>
+          ) : (
+            <div className="bg-[#202126] p-4 rounded-xl border border-[#2e303b] text-center space-y-2">
+              <div className="w-9 h-9 bg-[#282a35] rounded-xl flex items-center justify-center mx-auto text-neutral-400">
+                <MousePointer className="w-4 h-4" />
+              </div>
+              <div className="text-xs font-semibold text-neutral-200">No Object Selected</div>
+              <p className="text-[11px] text-neutral-400 leading-relaxed">
+                Click any text, image, or drawing on the page to view and customize its properties.
+              </p>
+            </div>
+          )}
+        </div>
 
-            {/* Quick Actions (Copy / Paste / Delete) */}
-            <div className="space-y-2">
-              <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wide">
-                Copy &amp; Paste
-              </span>
+        {/* ================= 3. QUICK ACTIONS ================= */}
+        <div className="space-y-2">
+          <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wide flex items-center space-x-1.5">
+            <Zap className="w-3.5 h-3.5 text-amber-400" />
+            <span>Quick Actions</span>
+          </span>
+
+          {selectedObject ? (
+            <div className="space-y-2.5">
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => onCopy(selectedObject)}
@@ -690,308 +807,196 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Remove from this page (Delete)</span>
               </button>
-            </div>
 
-            {/* ================= SECTION 2: SAME OBJECT WORKFLOW ================= */}
-            <div className="space-y-2.5 pt-2 border-t border-[#323232]">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-blue-400 uppercase tracking-wide flex items-center space-x-1">
-                  <Sparkles className="w-3 h-3 text-blue-400" />
-                  <span>Same Object Workflow</span>
-                </span>
-              </div>
-
-              {matches.length === 0 ? (
-                <button
-                  onClick={() => onFindEverywhere(selectedObject)}
-                  aria-label="Find Same Object"
-                  className="w-full px-3 py-2.5 bg-gradient-to-r from-[#0265dc] to-[#014ca8] hover:from-[#0156be] hover:to-[#013f8c] border border-blue-500/40 rounded-lg text-xs font-bold text-white flex items-center justify-center space-x-2 transition duration-150 shadow-sm cursor-pointer"
-                >
-                  <Sparkles className="w-4 h-4 text-blue-200" />
-                  <span>Find Same Object</span>
-                </button>
-              ) : (
-                <div className="bg-[#1b2432] p-3 rounded-xl border border-blue-800/60 space-y-3">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="text-xs font-bold text-white flex items-center space-x-1.5">
-                        <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-                        <span>
-                          Found {matches.length} matching{' '}
-                          {matches.length === 1 ? 'object' : 'objects'}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-blue-200/80 mt-0.5">
-                        On {new Set(matches.map((m) => m.pageIndex)).size} pages ({checkedMatchCount}{' '}
-                        checked)
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => onFindEverywhere(selectedObject)}
-                      className="text-[10px] text-blue-300 hover:text-white underline font-semibold cursor-pointer"
-                    >
-                      Review Matches
-                    </button>
-                  </div>
-
-                  {/* Matched Pages Badges with fast jump */}
-                  <div className="flex flex-wrap gap-1.5">
-                    {Array.from(new Set(matches.map((m) => m.pageIndex))).map((pageIdx) => (
-                      <button
-                        key={pageIdx}
-                        onClick={() => onNavigateToPage(pageIdx)}
-                        className={`text-[10px] font-mono px-2 py-0.5 rounded-full border transition duration-150 flex items-center space-x-1 cursor-pointer ${
-                          pageIdx === activePageIndex
-                            ? 'bg-[#0265dc] text-white font-extrabold border-blue-400'
-                            : 'bg-[#141c27] text-blue-300 border-blue-800 hover:bg-blue-900/60'
-                        }`}
-                      >
-                        <span>Pg {pageIdx + 1}</span>
-                        {pageIdx === activePageIndex && <Check className="w-2.5 h-2.5" />}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Same Object Actions */}
-                  <div className="space-y-2 pt-1">
-                    {onToggleHighlightMatches && (
-                      <button
-                        onClick={onToggleHighlightMatches}
-                        aria-label="Highlight Matches"
-                        className={`w-full px-3 py-1.5 rounded-lg text-xs font-semibold border flex items-center justify-center space-x-1.5 transition duration-150 cursor-pointer ${
-                          isHighlightMatchesActive
-                            ? 'bg-blue-500/25 border-blue-400 text-blue-200'
-                            : 'bg-[#151c27] hover:bg-[#1d2736] border-blue-800/60 text-blue-300'
-                        }`}
-                      >
-                        <Eye className="w-3.5 h-3.5 text-blue-400" />
-                        <span>
-                          {isHighlightMatchesActive
-                            ? 'Highlighting Matches (Blue Outline)'
-                            : 'Highlight Matches'}
-                        </span>
-                      </button>
-                    )}
-
-                    <button
-                      onClick={onOpenReplaceModal}
-                      aria-label="Replace Same Object"
-                      className="w-full px-3 py-2 bg-[#0265dc] hover:bg-[#0151b0] rounded-lg text-xs font-bold text-white flex items-center justify-center space-x-1.5 transition duration-150 shadow-sm cursor-pointer"
-                    >
-                      <Replace className="w-3.5 h-3.5" />
-                      <span>Replace Same Object ({checkedMatchCount})</span>
-                    </button>
-
-                    <button
-                      onClick={onRemoveEverywhere}
-                      aria-label="Remove Same Object"
-                      className="w-full px-3 py-2 bg-red-950/60 hover:bg-red-900/70 border border-red-800/80 rounded-lg text-xs font-bold text-red-300 flex items-center justify-center space-x-1.5 transition duration-150 cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Remove Same Object ({checkedMatchCount})</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          /* Empty Inspector Guidance */
-          <div className="space-y-5 text-neutral-400">
-            {/* Clipboard ready card */}
-            {copiedObject && (
-              <div className="bg-[#1e2722] border border-emerald-800/60 p-3.5 rounded-xl space-y-2.5 shadow-sm">
+              {/* Same Object Workflow */}
+              <div className="space-y-2 pt-2 border-t border-[#323232]">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2 text-xs font-bold text-emerald-300">
-                    <ClipboardPaste className="w-4 h-4 text-emerald-400" />
-                    <span>Clipboard in Memory</span>
-                  </div>
+                  <span className="text-[11px] font-bold text-blue-400 uppercase tracking-wide flex items-center space-x-1">
+                    <Sparkles className="w-3 h-3 text-blue-400" />
+                    <span>Same Object Workflow</span>
+                  </span>
+                </div>
+
+                {matches.length === 0 ? (
                   <button
-                    onClick={onClearClipboard}
-                    className="p-1 text-emerald-400 hover:text-white rounded cursor-pointer"
-                    title="Clear Clipboard"
+                    onClick={() => onFindEverywhere(selectedObject)}
+                    aria-label="Find Same Object"
+                    className="w-full px-3 py-2.5 bg-gradient-to-r from-[#0265dc] to-[#014ca8] hover:from-[#0156be] hover:to-[#013f8c] border border-blue-500/40 rounded-lg text-xs font-bold text-white flex items-center justify-center space-x-2 transition duration-150 shadow-sm cursor-pointer"
                   >
-                    <X className="w-3.5 h-3.5" />
+                    <Sparkles className="w-3.5 h-3.5 text-blue-200" />
+                    <span>Find Same Object</span>
                   </button>
-                </div>
+                ) : (
+                  <div className="bg-[#1b2432] p-3 rounded-xl border border-blue-800/60 space-y-3">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="text-xs font-bold text-white flex items-center space-x-1.5">
+                          <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                          <span>
+                            Found {matches.length} matching{' '}
+                            {matches.length === 1 ? 'object' : 'objects'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-blue-200/80 mt-0.5">
+                          On {new Set(matches.map((m) => m.pageIndex)).size} pages ({checkedMatchCount}{' '}
+                          checked)
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => onFindEverywhere(selectedObject)}
+                        className="text-[10px] text-blue-300 hover:text-white underline font-semibold cursor-pointer"
+                      >
+                        Review Matches
+                      </button>
+                    </div>
 
-                <div className="flex items-center space-x-2.5">
-                  <div className="w-10 h-10 bg-black/40 rounded-lg border border-emerald-900/60 overflow-hidden flex items-center justify-center shrink-0">
-                    {copiedObject.imageDataUrl ? (
-                      <img
-                        src={copiedObject.imageDataUrl}
-                        alt="Copied thumbnail"
-                        className="max-w-full max-h-full object-contain"
-                      />
-                    ) : (
-                      <TypeIcon className="w-4 h-4 text-emerald-400" />
-                    )}
-                  </div>
-                  <div className="text-[11px] text-emerald-200/80">
-                    <p className="font-semibold text-white">Ready for unlimited pasting</p>
-                    <p>
-                      {Math.round(copiedObject.bounds.width)}×{Math.round(copiedObject.bounds.height)} pt
-                    </p>
-                  </div>
-                </div>
+                    {/* Matched Pages Badges with fast jump */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {Array.from(new Set(matches.map((m) => m.pageIndex))).map((pageIdx) => (
+                        <button
+                          key={pageIdx}
+                          onClick={() => onNavigateToPage(pageIdx)}
+                          className={`text-[10px] font-mono px-2 py-0.5 rounded-full border transition duration-150 flex items-center space-x-1 cursor-pointer ${
+                            pageIdx === activePageIndex
+                              ? 'bg-[#0265dc] text-white font-extrabold border-blue-400'
+                              : 'bg-[#141c27] text-blue-300 border-blue-800 hover:bg-blue-900/60'
+                          }`}
+                        >
+                          <span>Pg {pageIdx + 1}</span>
+                          {pageIdx === activePageIndex && <Check className="w-2.5 h-2.5" />}
+                        </button>
+                      ))}
+                    </div>
 
+                    {/* Same Object Actions */}
+                    <div className="space-y-2 pt-1">
+                      {onToggleHighlightMatches && (
+                        <button
+                          onClick={onToggleHighlightMatches}
+                          aria-label="Highlight Matches"
+                          className={`w-full px-3 py-1.5 rounded-lg text-xs font-semibold border flex items-center justify-center space-x-1.5 transition duration-150 cursor-pointer ${
+                            isHighlightMatchesActive
+                              ? 'bg-blue-500/25 border-blue-400 text-blue-200'
+                              : 'bg-[#151c27] hover:bg-[#1d2736] border-blue-800/60 text-blue-300'
+                          }`}
+                        >
+                          <Eye className="w-3.5 h-3.5 text-blue-400" />
+                          <span>
+                            {isHighlightMatchesActive
+                              ? 'Highlighting Matches (Blue Outline)'
+                              : 'Highlight Matches'}
+                          </span>
+                        </button>
+                      )}
+
+                      <button
+                        onClick={onOpenReplaceModal}
+                        aria-label="Replace Same Object"
+                        className="w-full px-3 py-2 bg-[#0265dc] hover:bg-[#0151b0] rounded-lg text-xs font-bold text-white flex items-center justify-center space-x-1.5 transition duration-150 shadow-sm cursor-pointer"
+                      >
+                        <Replace className="w-3.5 h-3.5" />
+                        <span>Replace Same Object ({checkedMatchCount})</span>
+                      </button>
+
+                      <button
+                        onClick={onRemoveEverywhere}
+                        aria-label="Remove Same Object"
+                        className="w-full px-3 py-2 bg-red-950/60 hover:bg-red-900/70 border border-red-800/80 rounded-lg text-xs font-bold text-red-300 flex items-center justify-center space-x-1.5 transition duration-150 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Remove Same Object ({checkedMatchCount})</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : copiedObject ? (
+            <div className="bg-[#1e2722] border border-emerald-800/60 p-3.5 rounded-xl space-y-2.5 shadow-sm">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2 text-xs font-bold text-emerald-300">
+                  <ClipboardPaste className="w-4 h-4 text-emerald-400" />
+                  <span>Clipboard in Memory</span>
+                </div>
                 <button
-                  onClick={onPaste}
-                  aria-label="Paste to Current Page"
-                  className="w-full px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-xs font-bold text-white transition duration-150 flex items-center justify-center space-x-1.5 shadow-sm cursor-pointer"
+                  onClick={onClearClipboard}
+                  className="p-1 text-emerald-400 hover:text-white rounded cursor-pointer"
+                  title="Clear Clipboard"
                 >
-                  <ClipboardPaste className="w-3.5 h-3.5" />
-                  <span>Paste on Page {activePageIndex + 1}</span>
+                  <X className="w-3.5 h-3.5" />
                 </button>
               </div>
-            )}
 
-            {/* Tool Mode Quick Toggle Card */}
-            <div className="bg-[#1e2027] p-3.5 rounded-xl border border-[#2c2f3a] space-y-2.5">
-              <span className="text-xs font-bold text-white block">Active Editor Tool</span>
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => onSetTool('select')}
-                  className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
-                    activeTool === 'select'
-                      ? 'bg-[#0265dc] text-white shadow-xs'
-                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
-                  }`}
-                >
-                  <MousePointer className="w-3.5 h-3.5" />
-                  <span>Select</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onSetTool('crop')}
-                  className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
-                    activeTool === 'crop'
-                      ? 'bg-[#0265dc] text-white shadow-xs'
-                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
-                  }`}
-                >
-                  <CropIcon className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Crop</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onSetTool('text')}
-                  className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
-                    activeTool === 'text'
-                      ? 'bg-[#0265dc] text-white shadow-xs'
-                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
-                  }`}
-                >
-                  <TypeIcon className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Text</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onSetTool('image')}
-                  className={`p-2 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition duration-150 cursor-pointer ${
-                    activeTool === 'image'
-                      ? 'bg-[#0265dc] text-white shadow-xs'
-                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
-                  }`}
-                >
-                  <ImageIcon className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Image</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onSetTool('draw')}
-                  className={`col-span-2 p-2 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1.5 transition duration-150 cursor-pointer ${
-                    activeTool === 'draw'
-                      ? 'bg-[#0265dc] text-white shadow-xs'
-                      : 'bg-[#16171d] hover:bg-[#252730] text-neutral-300 border border-[#282a34]'
-                  }`}
-                >
-                  <PenTool className="w-3.5 h-3.5 text-rose-400" />
-                  <span>Freehand Draw</span>
-                </button>
+              <div className="flex items-center space-x-2.5">
+                <div className="w-10 h-10 bg-black/40 rounded-lg border border-emerald-900/60 overflow-hidden flex items-center justify-center shrink-0">
+                  {copiedObject.imageDataUrl ? (
+                    <img
+                      src={copiedObject.imageDataUrl}
+                      alt="Copied thumbnail"
+                      className="max-w-full max-h-full object-contain"
+                    />
+                  ) : (
+                    <TypeIcon className="w-4 h-4 text-emerald-400" />
+                  )}
+                </div>
+                <div className="text-[11px] text-emerald-200/80">
+                  <p className="font-semibold text-white">Ready for unlimited pasting</p>
+                  <p>
+                    {Math.round(copiedObject.bounds.width)}×{Math.round(copiedObject.bounds.height)} pt
+                  </p>
+                </div>
               </div>
-              <p className="text-[11px] text-neutral-400 leading-normal">
-                {activeTool === 'crop'
-                  ? 'Drag a rectangle on any page to crop or copy that region.'
-                  : activeTool === 'text'
-                  ? 'Click anywhere on a PDF page to add a movable, resizable text box.'
-                  : activeTool === 'image'
-                  ? 'Click on a page or drop an image file to place a resizable image.'
-                  : activeTool === 'draw'
-                  ? 'Draw continuously directly on the page. Press Esc or select another tool to exit Draw mode.'
-                  : 'Click any object to move/resize, or double-click any text to edit inline.'}
+
+              <button
+                onClick={onPaste}
+                aria-label="Paste to Current Page"
+                className="w-full px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-xs font-bold text-white transition duration-150 flex items-center justify-center space-x-1.5 shadow-sm cursor-pointer"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5" />
+                <span>Paste on Page {activePageIndex + 1}</span>
+              </button>
+            </div>
+          ) : (
+            <div className="bg-[#202126] p-3.5 rounded-xl border border-[#2e303b] text-neutral-400 text-xs">
+              <p className="text-[11px] leading-relaxed">
+                Select any object on the page to copy, paste, delete, or replace across all pages.
               </p>
             </div>
+          )}
+        </div>
 
-            {/* General Instructions Card */}
-            <div className="bg-[#252526] p-4 rounded-xl border border-[#383838] space-y-3">
-              <div className="flex items-center space-x-2 text-white font-bold text-xs">
-                <Info className="w-4 h-4 text-blue-400" />
-                <span>Core Workflows</span>
-              </div>
-
-              <div className="space-y-2.5 text-xs pt-1">
-                <div className="p-2.5 bg-[#1e1e1e] rounded-lg border border-[#303030]">
-                  <div className="font-semibold text-neutral-200 flex items-center space-x-1.5">
-                    <Copy className="w-3.5 h-3.5 text-blue-400" />
-                    <span>Copy, Crop, Paste & Text Edit</span>
-                  </div>
-                  <p className="text-[11px] text-neutral-400 mt-1">
-                    Double-click any text to edit inline, or select an object / crop area, press{' '}
-                    <b>Ctrl+C</b> to copy, and paste with <b>Ctrl+V</b>.
-                  </p>
-                </div>
-
-                <div className="p-2.5 bg-[#1e1e1e] rounded-lg border border-[#303030]">
-                  <div className="font-semibold text-cyan-300 flex items-center space-x-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Replace / Remove Everywhere</span>
-                  </div>
-                  <p className="text-[11px] text-neutral-400 mt-1">
-                    Select recurring logos, stamps, or headers and replace or remove them across the entire PDF with 1 click.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Shortcuts Guide */}
-            <div className="bg-[#252526] p-3 rounded-xl border border-[#383838] space-y-2 text-xs">
-              <span className="font-bold text-neutral-300 block">Shortcuts:</span>
-              <div className="grid grid-cols-2 gap-1.5 text-[11px] font-mono text-neutral-400">
-                <div>
-                  <kbd className="bg-[#1e1e1e] px-1.5 py-0.5 rounded border border-neutral-700 text-neutral-200">
-                    Ctrl+C
-                  </kbd>{' '}
-                  Copy
-                </div>
-                <div>
-                  <kbd className="bg-[#1e1e1e] px-1.5 py-0.5 rounded border border-neutral-700 text-neutral-200">
-                    Ctrl+V
-                  </kbd>{' '}
-                  Paste
-                </div>
-                <div>
-                  <kbd className="bg-[#1e1e1e] px-1.5 py-0.5 rounded border border-neutral-700 text-neutral-200">
-                    Del
-                  </kbd>{' '}
-                  Remove
-                </div>
-                <div>
-                  <kbd className="bg-[#1e1e1e] px-1.5 py-0.5 rounded border border-neutral-700 text-neutral-200">
-                    Ctrl+Z
-                  </kbd>{' '}
-                  Undo
-                </div>
-              </div>
-            </div>
+        {/* ================= 4. KEYBOARD SHORTCUTS ================= */}
+        <div className="space-y-2 pt-2 border-t border-[#2d2f38]">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wide flex items-center space-x-1.5">
+              <Keyboard className="w-3.5 h-3.5 text-blue-400" />
+              <span>Keyboard Shortcuts</span>
+            </span>
           </div>
-        )}
+
+          <button
+            type="button"
+            onClick={() => setIsShortcutsModalOpen(true)}
+            aria-label="View Keyboard Shortcuts"
+            className="w-full px-3.5 py-2.5 bg-[#252528] hover:bg-[#303035] active:bg-[#222225] border border-[#3c3c42] hover:border-blue-500/50 rounded-xl text-xs font-semibold text-neutral-200 hover:text-white flex items-center justify-between transition-all duration-150 shadow-xs cursor-pointer group"
+          >
+            <div className="flex items-center space-x-2.5">
+              <div className="p-1.5 bg-[#1b1c22] group-hover:bg-blue-600/20 group-hover:text-blue-400 border border-[#343640] rounded-lg text-neutral-400 transition-colors">
+                <Keyboard className="w-4 h-4" />
+              </div>
+              <span>View Keyboard Shortcuts</span>
+            </div>
+            <span className="text-[10px] font-mono px-2 py-0.5 bg-[#18191f] text-neutral-400 group-hover:text-neutral-200 rounded border border-[#343640]">
+              ?
+            </span>
+          </button>
+        </div>
       </div>
+
+      <KeyboardShortcutsModal
+        isOpen={isShortcutsModalOpen}
+        onClose={() => setIsShortcutsModalOpen(false)}
+      />
       </aside>
     </>
   );

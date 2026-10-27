@@ -223,3 +223,122 @@ test('applyModificationsAndExport supports underline, letterSpacing, lineHeight,
   assert.equal(reloaded.getPageCount(), 1);
 });
 
+test('applyModificationsAndExport preserves document metadata and untouched pages in-place', async () => {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Annual Financial Report 2026');
+  doc.setAuthor('Enterprise Accounting Team');
+  doc.setSubject('Corporate Audits & Compliance');
+  doc.setKeywords(['finance', 'audit', '2026']);
+  doc.setProducer('PDF Forge Production Engine');
+  doc.setCreator('PDF Forge Pro');
+
+  doc.addPage([595.28, 841.89]);
+  doc.addPage([595.28, 841.89]);
+  const initialBytes = await doc.save();
+
+  const pages = [
+    {
+      id: 'p0',
+      pageIndex: 0,
+      pageNumber: 1,
+      width: 595.28,
+      height: 841.89,
+      isBlankPage: false,
+      originalPageIndex: 0,
+      rotation: 0,
+    },
+    {
+      id: 'p1',
+      pageIndex: 1,
+      pageNumber: 2,
+      width: 595.28,
+      height: 841.89,
+      isBlankPage: false,
+      originalPageIndex: 1,
+      rotation: 0,
+    },
+  ];
+
+  // Modify only page 0; page 1 remains completely untouched
+  const modifications: DocumentModifications = {
+    0: {
+      removedObjectIds: [],
+      replacedObjects: [],
+      pastedObjects: [
+        {
+          id: 'signature-text',
+          pageIndex: 0,
+          type: 'text',
+          bounds: { x: 72, y: 100, width: 200, height: 24 },
+          text: 'Approved by Financial Controller',
+          fontSize: 12,
+          isNew: true,
+        },
+      ],
+    },
+  };
+
+  const exportedBytes = await applyModificationsAndExport(
+    initialBytes,
+    modifications,
+    new Map(),
+    pages
+  );
+
+  assert.ok(exportedBytes instanceof Uint8Array);
+  const reloaded = await PDFDocument.load(exportedBytes);
+
+  // Verify document metadata is 100% preserved
+  assert.equal(reloaded.getTitle(), 'Annual Financial Report 2026');
+  assert.equal(reloaded.getAuthor(), 'Enterprise Accounting Team');
+  assert.equal(reloaded.getSubject(), 'Corporate Audits & Compliance');
+  assert.equal(reloaded.getKeywords(), 'finance audit 2026');
+  assert.equal(reloaded.getPageCount(), 2);
+});
+
+test('applyModificationsAndExport preserves document metadata even across structural page changes', async () => {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Legal Brief');
+  doc.setAuthor('Counsel');
+  doc.addPage([600, 800]);
+  doc.addPage([600, 800]);
+  const initialBytes = await doc.save();
+
+  // Reorganize pages: page 1 first, then page 0
+  const pages = [
+    {
+      id: 'p1',
+      pageIndex: 0,
+      pageNumber: 1,
+      width: 600,
+      height: 800,
+      isBlankPage: false,
+      originalPageIndex: 1,
+      rotation: 0,
+    },
+    {
+      id: 'p0',
+      pageIndex: 1,
+      pageNumber: 2,
+      width: 600,
+      height: 800,
+      isBlankPage: false,
+      originalPageIndex: 0,
+      rotation: 0,
+    },
+  ];
+
+  const exportedBytes = await applyModificationsAndExport(
+    initialBytes,
+    {},
+    new Map(),
+    pages
+  );
+
+  const reloaded = await PDFDocument.load(exportedBytes);
+  assert.equal(reloaded.getTitle(), 'Legal Brief');
+  assert.equal(reloaded.getAuthor(), 'Counsel');
+  assert.equal(reloaded.getPageCount(), 2);
+});
+
+

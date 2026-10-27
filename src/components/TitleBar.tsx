@@ -121,6 +121,8 @@ export interface TitleBarProps {
   onOpenPageNumberModal?: () => void;
   onOpenHeaderFooterModal?: () => void;
   onOpenInvertColorsModal?: () => void;
+  onOpenNupModal?: () => void;
+  onOpenBatchCropModal?: () => void;
   onToggleSidebar?: () => void;
   onToggleInspector?: () => void;
 }
@@ -205,6 +207,8 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenPageNumberModal,
   onOpenHeaderFooterModal,
   onOpenInvertColorsModal,
+  onOpenNupModal,
+  onOpenBatchCropModal,
   onToggleSidebar,
   onToggleInspector,
 }) => {
@@ -732,6 +736,38 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   ) : (
                     <span className="text-[10px] font-mono text-zinc-500">Dark/Invert</span>
                   )}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!filename}
+                  onClick={() => {
+                    setIsToolsDropdownOpen(false);
+                    onOpenNupModal?.();
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs flex items-center justify-between text-zinc-200 hover:text-white hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <LayoutGrid className="w-4 h-4 text-purple-400" />
+                    <span className="font-medium">N-Up Layout</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-zinc-500">Custom Grid</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!filename}
+                  onClick={() => {
+                    setIsToolsDropdownOpen(false);
+                    onOpenBatchCropModal?.();
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs flex items-center justify-between text-zinc-200 hover:text-white hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Crop className="w-4 h-4 text-sky-400" />
+                    <span className="font-medium">Batch Page Crop</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-zinc-500">Multi-Page</span>
                 </button>
 
                 <button
@@ -1529,6 +1565,25 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               </div>
               <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
                 Pages
+              </span>
+            </div>
+
+            <div className="w-[1px] bg-[#30323e] my-1 mx-1 shrink-0" />
+
+            {/* Group: Imposition / Multi-Page */}
+            <div className="flex flex-col justify-between shrink-0">
+              <button
+                type="button"
+                onClick={onOpenNupModal}
+                disabled={!filename}
+                className="h-[62px] min-w-[56px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 disabled:opacity-40 transition-colors text-zinc-300 hover:text-white"
+                title="Rearrange multiple pages onto single sheets (N-Up Layout for printing)"
+              >
+                <LayoutGrid className="w-5 h-5 text-indigo-400 mb-1" />
+                <span className="text-[11px] font-medium leading-tight">N-Up</span>
+              </button>
+              <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">
+                Multi-Page
               </span>
             </div>
           </div>

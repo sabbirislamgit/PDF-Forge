@@ -1,38 +1,252 @@
-name: Build Windows Release
+name: Desktop Application Build & Release
 
 on:
   push:
+    branches:
+      - main
+      - master
     tags:
-      - "v*"
+      - 'v*'
+      - '[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish as GitHub Release'
+        type: boolean
+        default: false
+      tag_name:
+        description: 'Release tag name (e.g., v1.0.0; optional, auto-detected from git ref or package.json)'
+        required: false
+        type: string
+        default: ''
 
+# Top-level permissions to ensure GITHUB_TOKEN has write access for Releases and Assets
 permissions:
   contents: write
 
 jobs:
-  build:
-    runs-on: windows-latest
+  # =========================================================================
+  # 1. CROSS-PLATFORM BUILD MATRIX (Windows, macOS, Linux)
+  # =========================================================================
+  build-desktop:
+    name: Build (${{ matrix.os_name }})
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'windows-latest'
+            os_name: 'Windows'
+            artifact_name: 'windows-x64'
+            build_args: ''
+          - platform: 'macos-latest'
+            os_name: 'macOS'
+            artifact_name: 'macos-universal'
+            build_args: '--target universal-apple-darwin'
+          - platform: 'ubuntu-22.04'
+            os_name: 'Linux'
+            artifact_name: 'linux-x64'
+            build_args: ''
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: 'npm'
 
-      - name: Install Rust
+      - name: Install Rust Stable & Compilation Targets
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # On macOS, install both aarch64 and x86_64 targets for universal binary compilation
+          targets: ${{ matrix.os_name == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Setup Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      # Linux-specific build headers and system libraries for Tauri v2 (WebKit2GTK 4.1)
+      - name: Install Linux Dependencies
+        if: matrix.os_name == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils
 
       - name: Install Dependencies
         run: npm install
 
-      - name: Build App
-        run: npm run tauri build
+      # Builds the frontend (Vite) and compiles the Tauri v2 desktop application bundle
+      - name: Build Desktop Application
+        run: npx tauri build ${{ matrix.build_args }}
 
-      - name: Upload Release
-        uses: softprops/action-gh-release@v2
+      # Stage all built installers and archives into a clean output directory
+      - name: Collect Installer Artifacts
+        shell: bash
+        run: |
+          mkdir -p release-packages
+
+          # On macOS, create a .tar.gz archive of the .app directory for direct portability
+          if [ "${{ matrix.os_name }}" = "macOS" ]; then
+            find src-tauri/target -type d -name "*.app" | while read -r appdir; do
+              parent_dir=$(dirname "$appdir")
+              app_name=$(basename "$appdir")
+              if [ ! -f "${parent_dir}/${app_name}.tar.gz" ]; then
+                echo "Archiving ${appdir} to ${parent_dir}/${app_name}.tar.gz"
+                tar -czf "${parent_dir}/${app_name}.tar.gz" -C "$parent_dir" "$app_name"
+              fi
+            done
+          fi
+
+          # Collect all native installer bundles
+          find src-tauri/target -type f \( \
+            -name "*.exe" -o \
+            -name "*.msi" -o \
+            -name "*.dmg" -o \
+            -name "*.deb" -o \
+            -name "*.AppImage" -o \
+            -name "*.rpm" -o \
+            -name "*.app.tar.gz" \
+          \) ! -path "*deps*" ! -path "*build*" ! -path "*incremental*" ! -path "*examples*" -exec cp -v {} release-packages/ \;
+
+          # Explicit bundle directory copy fallbacks
+          if [ -d "src-tauri/target/release/bundle/nsis" ]; then
+            cp -vf src-tauri/target/release/bundle/nsis/*.exe release-packages/ 2>/dev/null || true
+          fi
+          if [ -d "src-tauri/target/release/bundle/msi" ]; then
+            cp -vf src-tauri/target/release/bundle/msi/*.msi release-packages/ 2>/dev/null || true
+          fi
+          if [ -d "src-tauri/target/release/bundle/dmg" ]; then
+            cp -vf src-tauri/target/release/bundle/dmg/*.dmg release-packages/ 2>/dev/null || true
+          fi
+          if [ -d "src-tauri/target/universal-apple-darwin/release/bundle/dmg" ]; then
+            cp -vf src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg release-packages/ 2>/dev/null || true
+          fi
+          if [ -d "src-tauri/target/release/bundle/deb" ]; then
+            cp -vf src-tauri/target/release/bundle/deb/*.deb release-packages/ 2>/dev/null || true
+          fi
+          if [ -d "src-tauri/target/release/bundle/appimage" ]; then
+            cp -vf src-tauri/target/release/bundle/appimage/*.AppImage release-packages/ 2>/dev/null || true
+          fi
+
+          # Portable binary fallback for Windows
+          if [ "${{ matrix.os_name }}" = "Windows" ]; then
+            shopt -s nullglob
+            exes=(release-packages/*.exe)
+            if [ ${#exes[@]} -eq 0 ] && [ -f "src-tauri/target/release/pdf-object-editor.exe" ]; then
+              echo "Packaging standalone binary as PDF-Forge-Portable.exe"
+              cp -vf src-tauri/target/release/pdf-object-editor.exe release-packages/PDF-Forge-Portable.exe
+            fi
+          fi
+
+          echo "=== Collected artifacts for ${{ matrix.os_name }} ==="
+          ls -lh release-packages/
+
+      # Upload workflow artifacts for every build (push to main/master, tags, or workflow_dispatch)
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.msi
+          name: pdf-forge-${{ matrix.artifact_name }}
+          path: release-packages/*
+          if-no-files-found: error
+
+  # =========================================================================
+  # 2. CONSOLIDATED GITHUB RELEASE CREATION (When Tag Pushed or Requested)
+  # =========================================================================
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-desktop
+    # Trigger release publication when any version tag is pushed or manually requested
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (for metadata resolution)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Download all artifacts generated across all matrix runners (Windows, macOS, Linux)
+      - name: Download All Platform Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: pdf-forge-*
+          merge-multiple: true
+
+      - name: Determine Release Tag & Title
+        id: meta
+        run: |
+          if [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
+            TAG="${{ github.ref_name }}"
+          elif [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          else
+            VERSION=$(node -p "require('./package.json').version || '1.0.0'")
+            TAG="v${VERSION}"
+          fi
+          echo "tag_name=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "title=PDF Forge ${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Configured Release: PDF Forge ${TAG}"
+
+      # Generate SHA256 checksums manifest for all release installers
+      - name: Generate SHA256 Checksums
+        run: |
+          cd release-assets
+          echo "=== Ready to Publish Assets ==="
+          ls -lh
+          sha256sum * > SHA256SUMS.txt
+          echo "=== Generated Checksums ==="
+          cat SHA256SUMS.txt
+          cd ..
+
+      # Create or update official GitHub Release with all platform installers attached
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: ${{ steps.meta.outputs.title }}
+          body: |
+            ## PDF Forge ${{ steps.meta.outputs.tag_name }}
+
+            Professional cross-platform desktop PDF editor.
+
+            ### Desktop Installers Included:
+            - **Windows**:
+              - `.exe` (NSIS Setup Installer)
+              - `.msi` (Windows Installer Package)
+            - **macOS**:
+              - `.dmg` (Universal Disk Image for Apple Silicon M1/M2/M3/M4 & Intel Macs)
+              - `.app.tar.gz` (Universal Portable Application Archive)
+            - **Linux**:
+              - `.AppImage` (Universal Standalone Linux Executable)
+              - `.deb` (Debian / Ubuntu Package)
+
+            ### Integrity & Verification:
+            Download and inspect `SHA256SUMS.txt` to verify file integrity.
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          make_latest: true
+          files: release-assets/*

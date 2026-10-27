@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,23 +14,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: windows-latest
-          - platform: ubuntu-22.04
+        platform:
+          - windows-latest
+          - ubuntu-22.04
 
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      - name: Install Dependencies
-        run: bun install --frozen-lockfile
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -45,18 +47,17 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Build & Publish
+      - name: Install Dependencies
+        run: bun install
+
+      - name: Build & Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "PDF Forge ${{ github.ref_name }}"
+          releaseName: PDF Forge ${{ github.ref_name }}
           releaseBody: |
-            ## PDF Forge
-
-            Professional Desktop PDF Editor
-
+            PDF Forge Release
           releaseDraft: false
           prerelease: false

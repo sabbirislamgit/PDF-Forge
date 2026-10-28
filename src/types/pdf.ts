@@ -269,5 +269,7 @@ export interface PageInfo {
   baseHeight?: number; // Unrotated height in PDF points
   isColorInverted?: boolean; // Whether page colors (background, text, images, vector graphics) are permanently inverted
   invertDpiScale?: number; // Resolution scale factor for exporting inverted page
+  viewBoxOriginX?: number; // Base PDF user space X origin of the page view box
+  viewBoxOriginY?: number; // Base PDF user space Y origin of the page view box
 }
 

@@ -147,3 +147,170 @@ export function rotatePdfRect(
     };
   }
 }
+
+/**
+ * Checks whether two 2D axis-aligned rectangles intersect (touch or overlap).
+ */
+export function rectsIntersect(
+  r1: { x: number; y: number; width: number; height: number },
+  r2: { x: number; y: number; width: number; height: number }
+): boolean {
+  return !(
+    r2.x > r1.x + r1.width ||
+    r2.x + r2.width < r1.x ||
+    r2.y > r1.y + r1.height ||
+    r2.y + r2.height < r1.y
+  );
+}
+
+/**
+ * Checks whether a 2D point (px, py) is inside a rectangle.
+ */
+export function pointInRect(
+  px: number,
+  py: number,
+  rect: { x: number; y: number; width: number; height: number }
+): boolean {
+  return (
+    px >= rect.x &&
+    px <= rect.x + rect.width &&
+    py >= rect.y &&
+    py <= rect.y + rect.height
+  );
+}
+
+/**
+ * Maps a visible crop rectangle (origin at bottom-left of the upright visual page)
+ * into unrotated PDF user space coordinates [x, y, width, height] for setting
+ * CropBox/MediaBox on a page with rotation and base box offsets.
+ *
+ * Accounts for 0°, 90°, 180°, and 270° clockwise page rotations, as well as non-zero
+ * MediaBox/CropBox origin offsets.
+ */
+export function mapVisibleCropToPdfBox(
+  visibleCrop: PDFRect,
+  visibleWidth: number,
+  visibleHeight: number,
+  rotationDegrees: number,
+  originX = 0,
+  originY = 0
+): PDFRect {
+  const normRot = ((rotationDegrees % 360) + 360) % 360;
+  const left = visibleCrop.x;
+  const bottom = visibleCrop.y;
+  const w = visibleCrop.width;
+  const h = visibleCrop.height;
+
+  const top = visibleHeight - (bottom + h);
+  const right = visibleWidth - (left + w);
+
+  let relX: number;
+  let relY: number;
+  let boxW: number;
+  let boxH: number;
+
+  switch (normRot) {
+    case 0:
+      relX = left;
+      relY = bottom;
+      boxW = w;
+      boxH = h;
+      break;
+    case 90:
+      // Rotated 90° CW: visual top -> base left; visual left -> base bottom
+      relX = top;
+      relY = left;
+      boxW = h;
+      boxH = w;
+      break;
+    case 180:
+      // Rotated 180°: visual right -> base left; visual top -> base bottom
+      relX = right;
+      relY = top;
+      boxW = w;
+      boxH = h;
+      break;
+    case 270:
+      // Rotated 270° CW (90° CCW): visual bottom -> base left; visual right -> base bottom
+      relX = bottom;
+      relY = right;
+      boxW = h;
+      boxH = w;
+      break;
+    default:
+      relX = left;
+      relY = bottom;
+      boxW = w;
+      boxH = h;
+  }
+
+  return {
+    x: Math.round((originX + relX) * 100) / 100,
+    y: Math.round((originY + relY) * 100) / 100,
+    width: Math.max(10, Math.round(boxW * 100) / 100),
+    height: Math.max(10, Math.round(boxH * 100) / 100),
+  };
+}
+
+/**
+ * Maps an unrotated PDF user-space bounding box (e.g. from CropBox or MediaBox)
+ * back into the upright visible coordinate space of the page.
+ */
+export function mapPdfBoxToVisibleCrop(
+  pdfBox: PDFRect,
+  baseWidth: number,
+  baseHeight: number,
+  rotationDegrees: number,
+  originX = 0,
+  originY = 0
+): PDFRect {
+  const normRot = ((rotationDegrees % 360) + 360) % 360;
+  const relX = pdfBox.x - originX;
+  const relY = pdfBox.y - originY;
+  const w = pdfBox.width;
+  const h = pdfBox.height;
+
+  let left: number;
+  let bottom: number;
+  let visW: number;
+  let visH: number;
+
+  switch (normRot) {
+    case 0:
+      left = relX;
+      bottom = relY;
+      visW = w;
+      visH = h;
+      break;
+    case 90:
+      left = relY;
+      bottom = baseWidth - (relX + w);
+      visW = h;
+      visH = w;
+      break;
+    case 180:
+      left = baseWidth - (relX + w);
+      bottom = baseHeight - (relY + h);
+      visW = w;
+      visH = h;
+      break;
+    case 270:
+      left = baseHeight - (relY + h);
+      bottom = relX;
+      visW = h;
+      visH = w;
+      break;
+    default:
+      left = relX;
+      bottom = relY;
+      visW = w;
+      visH = h;
+  }
+
+  return {
+    x: Math.round(left * 100) / 100,
+    y: Math.round(bottom * 100) / 100,
+    width: Math.round(visW * 100) / 100,
+    height: Math.round(visH * 100) / 100,
+  };
+}

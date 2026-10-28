@@ -1,27 +1,28 @@
-# Production-Quality PDF Editing & Export Engine
+# PDF Editor Engine: Selection, Batch Crop & Header/Footer Improvements
 
 ## Overview
-Upgraded the PDF editing and export engine in `src/utils/pdfModifier.ts` to production quality. The exported PDF is visually indistinguishable from the original document while preserving 100% vector text, vector graphics, image resolutions, embedded fonts, and document metadata without rasterizing unmodified content.
+Comprehensive upgrade of the core PDF manipulation engines in PDF Forge, delivering professional Adobe Acrobat / Foxit / PDF-XChange Editor standard behavior without modifying the UI:
+1. **Selection Tool**: Professional selection rectangle (marquee) behavior that only selects objects intersecting the rectangle, supporting multi-selection and simultaneous translation of multiple selected items.
+2. **Batch Crop Engine**: Correct PDF coordinate mapping across all rotations (0°, 90°, 180°, 270°) and origin offsets, setting CropBox, MediaBox, BleedBox, TrimBox, and ArtBox with 100% vector preservation.
+3. **Header & Footer Engine**: High-fidelity PDF Header & Footer engine in `src/utils/headerFooter.ts` that applies headers and footers permanently to the PDF document, resolving dynamic tokens, correctly positioning across all orientations and margins, preserving page layout and existing content, and ensuring permanent persistence across saves and reopens.
 
-## Key Improvements
-1. **In-Place Modification & Stream Preservation**
-   - Automatically detects when document page count and order are unchanged.
-   - Preserves `srcPdfDoc` in-place, keeping all original PDF catalog objects, AcroForms, outlines/bookmarks, embedded font tables, and content streams intact.
-   - Completely skips unmodified pages so their content streams remain 100% untouched.
+## Key Implementation Details
 
-2. **Vector-First Text & Drawing Fidelity**
-   - Renders standard Latin/ASCII text and Western European characters as native PDF vector primitives (`drawFormattedTextBox`).
-   - Supports rotated text, custom letter spacing, line height, and multi-line alignment directly in vector coordinates without canvas rasterization.
-   - Vector center-based rotation transforms text and underlines around bounding box centers, matching viewport positioning.
-   - Restricts shaped canvas rendering solely to complex scripts (e.g. Bengali, Devanagari) and increased DPI scaling to 432 DPI (6.0x) with alpha transparency preservation.
+### 1. Selection Tool (Marquee & Multi-Object Selection)
+- **Selection Rectangle**: Dragging on empty space or across objects creates a professional selection marquee.
+- **Intersection Testing**: Only objects inside or intersecting the selection marquee become selected (`rectsIntersect`, `findIntersectingObjects`). Direct clicks select single objects without inadvertent marquee dragging.
+- **Multi-Object Operations**: Shift/Ctrl/Cmd multi-selection, simultaneous translation of multiple selected objects with page boundary clamping, and grouped deletion.
+- **Handle & Annotation Preservation**: Resize handles and annotation overlays remain fully functional.
 
-3. **Lossless Image Handling & Zero JPEG Recompression**
-   - Embeds JPEG images directly via `embedJpg` to preserve raw DCT streams without recompression.
-   - Embeds PNG and transparent graphics via `embedPng` with lossless Flate compression.
-   - Reuses embedded image caches to prevent duplicate streams.
+### 2. Batch Page Crop Engine
+- **Visible-to-PDF Coordinate Mapping**: `mapVisibleCropToPdfBox` maps the visual crop rectangle to the unrotated PDF user space bounding box for 0°, 90°, 180°, and 270° orientations, including non-zero MediaBox/CropBox origin offsets.
+- **Comprehensive Box Updates**: Sets `CropBox`, `MediaBox`, `BleedBox`, `TrimBox`, and `ArtBox` uniformly so all PDF viewers display the exact cropped area without white borders or offset shifts.
+- **Predictable Scopes**: Supports Current Page, All Pages, Even Pages, Odd Pages, Selected Pages, and Custom Page Ranges with optional proportional margin matching for non-uniform page sizes.
 
-4. **Precision Sub-Pixel Object Covering**
-   - Replaced coarse 1-2 pt margins on object removals/replacements with a precise 0.25 pt sub-pixel micro-margin to prevent clipping neighboring characters or graphics.
-
-5. **Document Metadata Retention**
-   - Preserves Title, Author, Subject, Keywords, Producer, Creator, and Creation Date across both in-place saves and structural page edits.
+### 3. Header & Footer Engine
+- **Direct PDF Modification**: When the user applies Header & Footer, `applyHeaderFooterToPdf` writes vector text directly into the PDF document pages using `pdf-lib`, and reloads the newly compiled document into the viewer with full Undo/Redo history.
+- **6-Slot Layout**: Accurately places Header Left, Header Center, Header Right, Footer Left, Footer Center, and Footer Right according to `marginTop`, `marginBottom`, and `marginX`.
+- **Dynamic Token Resolution**: Evaluates `{page}`, `[page]`, `%page%`, `{total}`, `[total]`, `%total%`, `{date}`, `[date]`, `{time}`, `[time]`, `{filename}`, and `[filename]` per page.
+- **Rotation Awareness**: `mapVisiblePointToPdfPoint` computes exact user space coordinates and text rotation angles (0°, 90°, 180°, 270°) so headers and footers always appear right-side up at the visual top and bottom.
+- **Complex Script Support**: Standard Latin/ASCII uses native PDF vector fonts (Helvetica, Times, Courier) for infinite sharpness and selectable text; Unicode and complex scripts (e.g. Bengali) render at 288 DPI via HTML Canvas and embed cleanly as PNGs.
+- **Permanent Round-Trip Preservation**: Saving the PDF preserves headers and footers permanently in the PDF bytes. Reopening in any PDF viewer or within the application displays the headers and footers accurately.

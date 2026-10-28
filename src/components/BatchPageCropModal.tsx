@@ -3,17 +3,10 @@ import * as pdfjsLib from 'pdfjs-dist';
 import {
   Crop,
   X,
-  FileText,
   RotateCcw,
-  Check,
   Eye,
   ChevronLeft,
   ChevronRight,
-  Sparkles,
-  Maximize2,
-  Info,
-  CheckSquare,
-  Square,
   Sliders,
 } from 'lucide-react';
 import { PageInfo, PDFRect } from '../types/pdf';
@@ -23,7 +16,6 @@ import {
   BatchCropProgressUpdate,
   resolveTargetPageIndices,
 } from '../utils/batchCrop';
-import { parsePageRangeInput, formatPageIndicesToRange } from '../utils/pdfColorInverter';
 
 interface BatchPageCropModalProps {
   isOpen: boolean;
@@ -38,7 +30,18 @@ interface BatchPageCropModalProps {
   onCancelProcess?: () => void;
 }
 
-type HandleType = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'move' | 'draw' | null;
+type HandleType =
+  | 'nw'
+  | 'n'
+  | 'ne'
+  | 'e'
+  | 'se'
+  | 's'
+  | 'sw'
+  | 'w'
+  | 'move'
+  | 'draw'
+  | null;
 
 export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
   isOpen,
@@ -60,9 +63,12 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
   // Crop Target Scope
   const [scope, setScope] = useState<BatchCropTargetScope>('all');
   const [customRangeText, setCustomRangeText] = useState<string>('');
+  const [selectedPageSet, setSelectedPageSet] = useState<Set<number>>(
+    () => new Set([currentPageIndex])
+  );
   const [sameSizeOnly, setSameSizeOnly] = useState<boolean>(true);
 
-  // View Mode: 'interactive' (full page with marquee) vs 'result' (clipped preview)
+  // View Mode: 'interactive' (full page with marquee) vs 'result' (exact clipped preview)
   const [previewMode, setPreviewMode] = useState<'interactive' | 'result'>('interactive');
   const [resultPreviewPageIndex, setResultPreviewPageIndex] = useState<number>(currentPageIndex);
 
@@ -71,7 +77,7 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
   const refW = Math.max(50, refPageInfo.width || 595.28);
   const refH = Math.max(50, refPageInfo.height || 841.89);
 
-  // Crop rectangle in PDF points (x, y from bottom-left, width, height)
+  // Crop rectangle in PDF points (x, y from bottom-left of visible page, width, height)
   const [cropRect, setCropRect] = useState<PDFRect>(() => ({
     x: Math.round(refW * 0.05),
     y: Math.round(refH * 0.05),
@@ -94,6 +100,7 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
       const safeIdx = Math.max(0, Math.min(totalPages - 1, currentPageIndex));
       setRefPageIndex(safeIdx);
       setResultPreviewPageIndex(safeIdx);
+      setSelectedPageSet(new Set([safeIdx]));
       if (!customRangeText) {
         setCustomRangeText(`1-${totalPages}`);
       }
@@ -112,8 +119,14 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
 
   // Target page indices according to scope
   const targetIndices = useMemo(() => {
-    return resolveTargetPageIndices(scope, totalPages, refPageIndex, customRangeText);
-  }, [scope, totalPages, refPageIndex, customRangeText]);
+    return resolveTargetPageIndices(
+      scope,
+      totalPages,
+      refPageIndex,
+      customRangeText,
+      Array.from(selectedPageSet)
+    );
+  }, [scope, totalPages, refPageIndex, customRangeText, selectedPageSet]);
 
   // Filtered affected pages based on 'sameSizeOnly'
   const affectedIndices = useMemo(() => {
@@ -151,18 +164,79 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
     });
   };
 
-  // Canvas drawing & scaling calculation
+  // Quick page selection chips for 'selected' scope
+  const handleTogglePageChip = (idx: number) => {
+    setSelectedPageSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) {
+        if (next.size > 1) {
+          next.delete(idx);
+        }
+      } else {
+        next.add(idx);
+      }
+      return next;
+    });
+  };
+
+  const handleQuickSelectPages = (mode: 'all' | 'odd' | 'even' | 'clear') => {
+    if (mode === 'all') {
+      setSelectedPageSet(new Set(Array.from({ length: totalPages }, (_, i) => i)));
+    } else if (mode === 'odd') {
+      setSelectedPageSet(
+        new Set(
+          Array.from({ length: totalPages }, (_, i) => i).filter(
+            (i) => (i + 1) % 2 !== 0
+          )
+        )
+      );
+    } else if (mode === 'even') {
+      setSelectedPageSet(
+        new Set(
+          Array.from({ length: totalPages }, (_, i) => i).filter(
+            (i) => (i + 1) % 2 === 0
+          )
+        )
+      );
+    } else {
+      setSelectedPageSet(new Set([refPageIndex]));
+    }
+  };
+
+  // Calculate canvas scale to fit inside container
   useEffect(() => {
     if (!isOpen) return;
     const container = containerRef.current;
     if (!container) return;
 
-    const maxW = container.clientWidth ? Math.max(260, container.clientWidth - 40) : 480;
-    const maxH = container.clientHeight ? Math.max(300, container.clientHeight - 40) : 460;
+    const maxW = container.clientWidth ? Math.max(260, container.clientWidth - 32) : 480;
+    const maxH = container.clientHeight ? Math.max(300, container.clientHeight - 32) : 460;
 
-    const scale = Math.min(maxW / refW, maxH / refH);
-    setCanvasScale(scale);
-  }, [isOpen, refW, refH]);
+    if (previewMode === 'interactive') {
+      const scale = Math.min(maxW / refW, maxH / refH);
+      setCanvasScale(scale);
+    } else {
+      const activePageIdx = resultPreviewPageIndex;
+      const activePageInfo = pages[activePageIdx] || refPageInfo;
+      const pageW = activePageInfo.width || refW;
+      const pageH = activePageInfo.height || refH;
+      const isSizeMatching =
+        Math.abs(pageW - refW) <= 2.5 && Math.abs(pageH - refH) <= 2.5;
+
+      const effectiveCropW = isSizeMatching
+        ? cropRect.width
+        : Math.max(20, pageW - (refW - cropRect.width));
+      const effectiveCropH = isSizeMatching
+        ? cropRect.height
+        : Math.max(20, pageH - (refH - cropRect.height));
+
+      const scale = Math.min(
+        maxW / Math.max(20, effectiveCropW),
+        maxH / Math.max(20, effectiveCropH)
+      );
+      setCanvasScale(scale);
+    }
+  }, [isOpen, previewMode, refW, refH, cropRect, resultPreviewPageIndex, pages, refPageInfo]);
 
   // Render canvas (interactive marquee or cropped result)
   useEffect(() => {
@@ -172,32 +246,26 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const activePageIdx = previewMode === 'interactive' ? refPageIndex : resultPreviewPageIndex;
-    const activePageInfo = pages[activePageIdx] || refPageInfo;
-    const pageW = activePageInfo.width || refW;
-    const pageH = activePageInfo.height || refH;
+    if (previewMode === 'interactive') {
+      const scale = canvasScale;
+      const canvasW = Math.max(100, Math.round(refW * scale));
+      const canvasH = Math.max(100, Math.round(refH * scale));
 
-    const scale = canvasScale;
-    const canvasW = Math.max(100, Math.round(pageW * scale));
-    const canvasH = Math.max(100, Math.round(pageH * scale));
+      canvas.width = canvasW;
+      canvas.height = canvasH;
 
-    canvas.width = canvasW;
-    canvas.height = canvasH;
+      ctx.fillStyle = refPageInfo.backgroundColor || '#ffffff';
+      ctx.fillRect(0, 0, canvasW, canvasH);
 
-    // Draw page background
-    ctx.fillStyle = activePageInfo.backgroundColor || '#ffffff';
-    ctx.fillRect(0, 0, canvasW, canvasH);
-
-    const renderOverlay = () => {
-      if (previewMode === 'interactive') {
+      const renderInteractiveOverlay = () => {
         // Render Darkened Mask outside crop box
         const cropLeft = cropRect.x * scale;
-        const cropTop = (pageH - (cropRect.y + cropRect.height)) * scale;
+        const cropTop = (refH - (cropRect.y + cropRect.height)) * scale;
         const cropW = cropRect.width * scale;
         const cropH = cropRect.height * scale;
 
         ctx.save();
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.6)';
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.65)';
 
         // Top
         ctx.fillRect(0, 0, canvasW, Math.max(0, cropTop));
@@ -284,47 +352,108 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
           cropTop + 19
         );
         ctx.restore();
+      };
+
+      if (refPageInfo.thumbnailDataUrl) {
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0, canvasW, canvasH);
+          renderInteractiveOverlay();
+        };
+        img.src = refPageInfo.thumbnailDataUrl;
       } else {
-        // Result preview mode: Highlight the active crop box with a border outline
-        const cropLeft = cropRect.x * scale;
-        const cropTop = (pageH - (cropRect.y + cropRect.height)) * scale;
-        const cropW = cropRect.width * scale;
-        const cropH = cropRect.height * scale;
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillRect(0, 0, canvasW, canvasH);
+        ctx.fillStyle = '#cbd5e1';
+        for (let l = 0; l < 12; l++) {
+          ctx.fillRect(16, 24 + l * 20, canvasW - 32, 6);
+        }
+        renderInteractiveOverlay();
+      }
+    } else {
+      // Result preview mode: Render the EXACT cropped page content
+      const activePageIdx = resultPreviewPageIndex;
+      const activePageInfo = pages[activePageIdx] || refPageInfo;
+      const pageW = activePageInfo.width || refW;
+      const pageH = activePageInfo.height || refH;
+
+      const isSizeMatching =
+        Math.abs(pageW - refW) <= 2.5 && Math.abs(pageH - refH) <= 2.5;
+
+      const isSkippedDueToSize = sameSizeOnly && !isSizeMatching;
+
+      const targetCrop: PDFRect = isSizeMatching
+        ? { ...cropRect }
+        : {
+            x: Math.max(0, Math.min(cropRect.x, pageW - 20)),
+            y: Math.max(0, Math.min(cropRect.y, pageH - 20)),
+            width: Math.max(20, pageW - cropRect.x - Math.max(0, refW - (cropRect.x + cropRect.width))),
+            height: Math.max(20, pageH - cropRect.y - Math.max(0, refH - (cropRect.y + cropRect.height))),
+          };
+
+      const scale = canvasScale;
+      const canvasW = Math.max(50, Math.round(targetCrop.width * scale));
+      const canvasH = Math.max(50, Math.round(targetCrop.height * scale));
+
+      canvas.width = canvasW;
+      canvas.height = canvasH;
+
+      ctx.fillStyle = activePageInfo.backgroundColor || '#ffffff';
+      ctx.fillRect(0, 0, canvasW, canvasH);
+
+      const drawCroppedResult = (img?: HTMLImageElement) => {
+        if (img) {
+          const natW = img.naturalWidth || pageW;
+          const natH = img.naturalHeight || pageH;
+
+          const sx = (targetCrop.x / pageW) * natW;
+          const sy = ((pageH - (targetCrop.y + targetCrop.height)) / pageH) * natH;
+          const sw = (targetCrop.width / pageW) * natW;
+          const sh = (targetCrop.height / pageH) * natH;
+
+          ctx.drawImage(
+            img,
+            Math.max(0, sx),
+            Math.max(0, sy),
+            Math.max(1, sw),
+            Math.max(1, sh),
+            0,
+            0,
+            canvasW,
+            canvasH
+          );
+        }
 
         ctx.save();
-        ctx.strokeStyle = '#10b981';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(cropLeft, cropTop, cropW, cropH);
+        // Thin professional boundary outline
+        ctx.strokeStyle = isSkippedDueToSize ? '#f59e0b' : '#10b981';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(0, 0, canvasW, canvasH);
 
         // Badge
-        ctx.fillStyle = 'rgba(16, 185, 129, 0.9)';
+        ctx.fillStyle = isSkippedDueToSize
+          ? 'rgba(245, 158, 11, 0.95)'
+          : 'rgba(16, 185, 129, 0.95)';
         ctx.beginPath();
-        ctx.roundRect(cropLeft + 6, cropTop + 6, 96, 18, 3);
+        ctx.roundRect(6, 6, isSkippedDueToSize ? 140 : 100, 18, 3);
         ctx.fill();
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 9px system-ui, sans-serif';
-        ctx.fillText('Cropped Boundary', cropLeft + 12, cropTop + 18);
+        ctx.fillText(
+          isSkippedDueToSize ? 'Skipped (Different Size)' : 'Cropped Result',
+          12,
+          18
+        );
         ctx.restore();
-      }
-    };
-
-    // Draw page thumbnail or rendered content
-    if (activePageInfo.thumbnailDataUrl) {
-      const img = new Image();
-      img.onload = () => {
-        ctx.drawImage(img, 0, 0, canvasW, canvasH);
-        renderOverlay();
       };
-      img.src = activePageInfo.thumbnailDataUrl;
-    } else {
-      // Faux page placeholder
-      ctx.fillStyle = '#f8fafc';
-      ctx.fillRect(0, 0, canvasW, canvasH);
-      ctx.fillStyle = '#cbd5e1';
-      for (let l = 0; l < 12; l++) {
-        ctx.fillRect(16, 24 + l * 20, canvasW - 32, 6);
+
+      if (activePageInfo.thumbnailDataUrl) {
+        const img = new Image();
+        img.onload = () => drawCroppedResult(img);
+        img.src = activePageInfo.thumbnailDataUrl;
+      } else {
+        drawCroppedResult();
       }
-      renderOverlay();
     }
   }, [
     isOpen,
@@ -337,6 +466,7 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
     refH,
     canvasScale,
     cropRect,
+    sameSizeOnly,
   ]);
 
   // Determine which handle (or center) is clicked
@@ -385,34 +515,24 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
     };
   };
 
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (previewMode !== 'interactive') return;
+  // Global window mousemove/mouseup listener for buttery smooth dragging & resizing with boundary snapping
+  useEffect(() => {
+    if (!activeHandle || previewMode !== 'interactive') return;
+
+    const handleWindowMouseMove = (e: MouseEvent) => {
       const canvas = canvasRef.current;
-      if (!canvas) return;
+      if (!canvas || !dragStartRef.current) return;
 
       const rect = canvas.getBoundingClientRect();
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
 
-      // Update cursor icon when hovering over handles
-      if (!activeHandle) {
-        const hoverHandle = getHandleAt(px, py);
-        let cursor = 'crosshair';
-        if (hoverHandle === 'nw' || hoverHandle === 'se') cursor = 'nwse-resize';
-        else if (hoverHandle === 'ne' || hoverHandle === 'sw') cursor = 'nesw-resize';
-        else if (hoverHandle === 'n' || hoverHandle === 's') cursor = 'ns-resize';
-        else if (hoverHandle === 'e' || hoverHandle === 'w') cursor = 'ew-resize';
-        else if (hoverHandle === 'move') cursor = 'move';
-        canvas.style.cursor = cursor;
-        return;
-      }
-
-      if (!dragStartRef.current) return;
       const { mouseX, mouseY, startRect } = dragStartRef.current;
       const scale = canvasScale;
       const dxPt = (px - mouseX) / scale;
       const dyPt = (py - mouseY) / scale;
+
+      const SNAP_THRESHOLD_PT = Math.max(6, 8 / Math.max(0.1, scale));
 
       let nextX = startRect.x;
       let nextY = startRect.y;
@@ -420,37 +540,78 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
       let nextH = startRect.height;
 
       if (activeHandle === 'move') {
-        nextX = Math.max(0, Math.min(refW - startRect.width, startRect.x + dxPt));
-        nextY = Math.max(0, Math.min(refH - startRect.height, startRect.y - dyPt));
+        let nX = startRect.x + dxPt;
+        let nY = startRect.y - dyPt;
+
+        // Snap to page edges
+        if (Math.abs(nX) <= SNAP_THRESHOLD_PT) {
+          nX = 0;
+        }
+        if (Math.abs(nX + startRect.width - refW) <= SNAP_THRESHOLD_PT) {
+          nX = refW - startRect.width;
+        }
+        if (Math.abs(nY) <= SNAP_THRESHOLD_PT) {
+          nY = 0;
+        }
+        if (Math.abs(nY + startRect.height - refH) <= SNAP_THRESHOLD_PT) {
+          nY = refH - startRect.height;
+        }
+
+        nextX = Math.max(0, Math.min(refW - startRect.width, nX));
+        nextY = Math.max(0, Math.min(refH - startRect.height, nY));
       } else if (activeHandle === 'draw') {
         const p1x = mouseX / scale;
         const p1y = refH - mouseY / scale;
         const p2x = px / scale;
         const p2y = refH - py / scale;
-        nextX = Math.max(0, Math.min(p1x, p2x));
-        nextY = Math.max(0, Math.min(p1y, p2y));
-        nextW = Math.min(refW - nextX, Math.abs(p2x - p1x));
-        nextH = Math.min(refH - nextY, Math.abs(p2y - p1y));
+
+        let left = Math.min(p1x, p2x);
+        let right = Math.max(p1x, p2x);
+        let bottom = Math.min(p1y, p2y);
+        let top = Math.max(p1y, p2y);
+
+        if (Math.abs(left) <= SNAP_THRESHOLD_PT) left = 0;
+        if (Math.abs(right - refW) <= SNAP_THRESHOLD_PT) right = refW;
+        if (Math.abs(bottom) <= SNAP_THRESHOLD_PT) bottom = 0;
+        if (Math.abs(top - refH) <= SNAP_THRESHOLD_PT) top = refH;
+
+        nextX = Math.max(0, left);
+        nextY = Math.max(0, bottom);
+        nextW = Math.max(20, Math.min(refW - nextX, right - left));
+        nextH = Math.max(20, Math.min(refH - nextY, top - bottom));
       } else {
-        // Resizing via handles
+        // Resizing via handles with edge snapping
         if (activeHandle.includes('e')) {
-          nextW = Math.max(20, Math.min(refW - startRect.x, startRect.width + dxPt));
+          let targetW = startRect.width + dxPt;
+          if (Math.abs(startRect.x + targetW - refW) <= SNAP_THRESHOLD_PT) {
+            targetW = refW - startRect.x;
+          }
+          nextW = Math.max(20, Math.min(refW - startRect.x, targetW));
         }
         if (activeHandle.includes('w')) {
-          const maxLeftShift = startRect.x;
-          const shift = Math.min(maxLeftShift, Math.max(-startRect.width + 20, dxPt));
-          nextX = startRect.x + shift;
-          nextW = startRect.width - shift;
+          let targetX = startRect.x + dxPt;
+          if (Math.abs(targetX) <= SNAP_THRESHOLD_PT) {
+            targetX = 0;
+          }
+          targetX = Math.max(0, Math.min(startRect.x + startRect.width - 20, targetX));
+          nextX = targetX;
+          nextW = startRect.width + (startRect.x - targetX);
         }
         if (activeHandle.includes('n')) {
-          // top edge moved (y decreases in canvas coords)
-          nextH = Math.max(20, Math.min(refH - startRect.y, startRect.height - dyPt));
+          let targetH = startRect.height - dyPt;
+          if (Math.abs(startRect.y + targetH - refH) <= SNAP_THRESHOLD_PT) {
+            targetH = refH - startRect.y;
+          }
+          nextH = Math.max(20, Math.min(refH - startRect.y, targetH));
         }
         if (activeHandle.includes('s')) {
-          // bottom edge moved
-          const shift = -dyPt;
-          nextY = Math.max(0, Math.min(startRect.y + startRect.height - 20, startRect.y + shift));
-          nextH = startRect.height - (nextY - startRect.y);
+          let targetY = startRect.y - dyPt;
+          if (Math.abs(targetY) <= SNAP_THRESHOLD_PT) {
+            targetY = 0;
+          }
+          targetY = Math.max(0, Math.min(startRect.y + startRect.height - 20, targetY));
+          nextY = targetY;
+          nextH = startRect.height + (startRect.y - targetY);
         }
       }
 
@@ -460,13 +621,39 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
         width: Math.max(20, Math.round(nextW)),
         height: Math.max(20, Math.round(nextH)),
       });
-    },
-    [previewMode, activeHandle, canvasScale, refW, refH, cropRect]
-  );
+    };
 
-  const handleMouseUp = () => {
-    setActiveHandle(null);
-    dragStartRef.current = null;
+    const handleWindowMouseUp = () => {
+      setActiveHandle(null);
+      dragStartRef.current = null;
+    };
+
+    window.addEventListener('mousemove', handleWindowMouseMove);
+    window.addEventListener('mouseup', handleWindowMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleWindowMouseMove);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+    };
+  }, [activeHandle, previewMode, canvasScale, refW, refH]);
+
+  // Update cursor hover on canvas
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (previewMode !== 'interactive' || activeHandle) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+
+    const hoverHandle = getHandleAt(px, py);
+    let cursor = 'crosshair';
+    if (hoverHandle === 'nw' || hoverHandle === 'se') cursor = 'nwse-resize';
+    else if (hoverHandle === 'ne' || hoverHandle === 'sw') cursor = 'nesw-resize';
+    else if (hoverHandle === 'n' || hoverHandle === 's') cursor = 'ns-resize';
+    else if (hoverHandle === 'e' || hoverHandle === 'w') cursor = 'ew-resize';
+    else if (hoverHandle === 'move') cursor = 'move';
+    canvas.style.cursor = cursor;
   };
 
   const handleApply = () => {
@@ -475,6 +662,7 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
       cropRect,
       scope,
       customRange: customRangeText,
+      selectedPages: Array.from(selectedPageSet),
       sameSizeOnly,
     };
     onApplyBatchCrop(options);
@@ -483,10 +671,7 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 select-none animate-in fade-in duration-150"
-      onMouseUp={handleMouseUp}
-    >
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 select-none animate-in fade-in duration-150">
       <div className="bg-[#1e1f26] border border-[#383a48] rounded-xl shadow-2xl w-full max-w-5xl max-h-[94vh] flex flex-col overflow-hidden text-zinc-200">
         {/* ===================== MODAL HEADER ===================== */}
         <div className="px-5 py-3.5 bg-[#252732] border-b border-[#343644] flex items-center justify-between shrink-0">
@@ -527,37 +712,55 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
             <div>
               {/* Canvas Top Bar: Reference Page Switcher & View Mode Toggle */}
               <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-[#2d2f3c]">
-                {/* Reference Page Navigation */}
+                {/* Page Navigation */}
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-zinc-400 font-medium">Reference Page:</span>
+                  <span className="text-xs text-zinc-400 font-medium">
+                    {previewMode === 'interactive' ? 'Reference Page:' : 'Preview Page:'}
+                  </span>
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
-                      disabled={refPageIndex <= 0 || isProcessing}
+                      disabled={
+                        (previewMode === 'interactive' ? refPageIndex : resultPreviewPageIndex) <= 0 ||
+                        isProcessing
+                      }
                       onClick={() => {
-                        const nextIdx = Math.max(0, refPageIndex - 1);
-                        setRefPageIndex(nextIdx);
-                        setResultPreviewPageIndex(nextIdx);
+                        if (previewMode === 'interactive') {
+                          const nextIdx = Math.max(0, refPageIndex - 1);
+                          setRefPageIndex(nextIdx);
+                          setResultPreviewPageIndex(nextIdx);
+                        } else {
+                          setResultPreviewPageIndex((prev) => Math.max(0, prev - 1));
+                        }
                       }}
-                      className="p-1 rounded bg-[#252732] hover:bg-[#303342] text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed transition"
+                      className="p-1 rounded bg-[#252732] hover:bg-[#303342] text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
                       title="Previous Page"
                     >
                       <ChevronLeft className="w-3.5 h-3.5" />
                     </button>
 
                     <span className="text-xs font-mono px-2 py-0.5 rounded bg-[#252732] border border-[#383a48] text-white">
-                      Page {refPageIndex + 1} of {totalPages}
+                      Page{' '}
+                      {(previewMode === 'interactive' ? refPageIndex : resultPreviewPageIndex) + 1} of{' '}
+                      {totalPages}
                     </span>
 
                     <button
                       type="button"
-                      disabled={refPageIndex >= totalPages - 1 || isProcessing}
+                      disabled={
+                        (previewMode === 'interactive' ? refPageIndex : resultPreviewPageIndex) >=
+                          totalPages - 1 || isProcessing
+                      }
                       onClick={() => {
-                        const nextIdx = Math.min(totalPages - 1, refPageIndex + 1);
-                        setRefPageIndex(nextIdx);
-                        setResultPreviewPageIndex(nextIdx);
+                        if (previewMode === 'interactive') {
+                          const nextIdx = Math.min(totalPages - 1, refPageIndex + 1);
+                          setRefPageIndex(nextIdx);
+                          setResultPreviewPageIndex(nextIdx);
+                        } else {
+                          setResultPreviewPageIndex((prev) => Math.min(totalPages - 1, prev + 1));
+                        }
                       }}
-                      className="p-1 rounded bg-[#252732] hover:bg-[#303342] text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed transition"
+                      className="p-1 rounded bg-[#252732] hover:bg-[#303342] text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
                       title="Next Page"
                     >
                       <ChevronRight className="w-3.5 h-3.5" />
@@ -574,7 +777,7 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setPreviewMode('interactive')}
-                    className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition ${
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
                       previewMode === 'interactive'
                         ? 'bg-sky-600 text-white shadow-xs'
                         : 'text-zinc-400 hover:text-white'
@@ -587,7 +790,7 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setPreviewMode('result')}
-                    className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition ${
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
                       previewMode === 'result'
                         ? 'bg-sky-600 text-white shadow-xs'
                         : 'text-zinc-400 hover:text-white'
@@ -608,7 +811,7 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
                   <canvas
                     ref={canvasRef}
                     onMouseDown={handleMouseDown}
-                    onMouseMove={handleMouseMove}
+                    onMouseMove={handleCanvasMouseMove}
                     className="rounded shadow-lg block max-w-full h-auto select-none"
                   />
                 </div>
@@ -622,21 +825,21 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
                 <button
                   type="button"
                   onClick={() => handleApplyTrimPreset(5)}
-                  className="px-2 py-1 rounded bg-[#232530] hover:bg-[#2c2f3e] border border-[#3b3e50] text-[11px] text-zinc-300"
+                  className="px-2 py-1 rounded bg-[#232530] hover:bg-[#2c2f3e] border border-[#3b3e50] text-[11px] text-zinc-300 cursor-pointer"
                 >
                   Trim 5% Margins
                 </button>
                 <button
                   type="button"
                   onClick={() => handleApplyTrimPreset(10)}
-                  className="px-2 py-1 rounded bg-[#232530] hover:bg-[#2c2f3e] border border-[#3b3e50] text-[11px] text-zinc-300"
+                  className="px-2 py-1 rounded bg-[#232530] hover:bg-[#2c2f3e] border border-[#3b3e50] text-[11px] text-zinc-300 cursor-pointer"
                 >
                   Trim 10% Margins
                 </button>
                 <button
                   type="button"
                   onClick={handleResetCrop}
-                  className="px-2 py-1 rounded bg-[#232530] hover:bg-[#2c2f3e] border border-[#3b3e50] text-[11px] text-zinc-300 flex items-center gap-1"
+                  className="px-2 py-1 rounded bg-[#232530] hover:bg-[#2c2f3e] border border-[#3b3e50] text-[11px] text-zinc-300 flex items-center gap-1 cursor-pointer"
                 >
                   <RotateCcw className="w-3 h-3" />
                   <span>Full Page</span>
@@ -667,8 +870,9 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
                 {[
                   { id: 'current', label: `Current Page (Page ${refPageIndex + 1})` },
                   { id: 'all', label: `All Pages (${totalPages} pages)` },
-                  { id: 'odd', label: 'Odd Pages Only (1, 3, 5...)' },
-                  { id: 'even', label: 'Even Pages Only (2, 4, 6...)' },
+                  { id: 'even', label: `Even Pages Only (${Math.floor(totalPages / 2)} pages)` },
+                  { id: 'odd', label: `Odd Pages Only (${Math.ceil(totalPages / 2)} pages)` },
+                  { id: 'selected', label: `Selected Pages (${selectedPageSet.size} selected)` },
                   { id: 'custom', label: 'Custom Page Range (e.g. 1-5, 8, 10-15)' },
                 ].map((target) => (
                   <label
@@ -690,6 +894,71 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
                   </label>
                 ))}
               </div>
+
+              {/* Selected Pages Interactive Picker */}
+              {scope === 'selected' && (
+                <div className="p-2.5 bg-[#181921] border border-[#3b3e50] rounded-lg space-y-2 animate-in fade-in duration-150">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-zinc-300 font-semibold">
+                      Select Pages to Crop:
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleQuickSelectPages('all')}
+                        className="px-1.5 py-0.5 rounded text-[10px] bg-[#252732] hover:bg-[#303342] text-zinc-300 transition cursor-pointer"
+                      >
+                        All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleQuickSelectPages('odd')}
+                        className="px-1.5 py-0.5 rounded text-[10px] bg-[#252732] hover:bg-[#303342] text-zinc-300 transition cursor-pointer"
+                      >
+                        Odd
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleQuickSelectPages('even')}
+                        className="px-1.5 py-0.5 rounded text-[10px] bg-[#252732] hover:bg-[#303342] text-zinc-300 transition cursor-pointer"
+                      >
+                        Even
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleQuickSelectPages('clear')}
+                        className="px-1.5 py-0.5 rounded text-[10px] bg-[#252732] hover:bg-[#303342] text-zinc-400 hover:text-white transition cursor-pointer"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-28 overflow-y-auto flex flex-wrap gap-1.5 pt-1">
+                    {pages.map((p, idx) => {
+                      const isPicked = selectedPageSet.has(idx);
+                      return (
+                        <button
+                          key={p.id || idx}
+                          type="button"
+                          onClick={() => handleTogglePageChip(idx)}
+                          className={`min-w-[30px] h-6 px-1.5 rounded text-[11px] font-mono font-medium border transition cursor-pointer flex items-center justify-center ${
+                            isPicked
+                              ? 'bg-sky-600 border-sky-500 text-white shadow-xs'
+                              : 'bg-[#121318] border-[#343644] text-zinc-400 hover:text-white hover:border-[#484a5c]'
+                          }`}
+                          title={`Toggle Page ${idx + 1}`}
+                        >
+                          {idx + 1}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="text-[11px] text-zinc-400 text-right">
+                    <span className="font-semibold text-sky-400">{selectedPageSet.size}</span> pages selected
+                  </div>
+                </div>
+              )}
 
               {/* Custom Page Range Input */}
               {scope === 'custom' && (
@@ -775,8 +1044,8 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
                       const v = Math.max(0, parseInt(e.target.value, 10) || 0);
                       setCropRect((prev) => ({
                         ...prev,
-                        x: v,
-                        width: Math.min(refW - v, prev.width),
+                        x: Math.min(refW - 20, v),
+                        width: Math.max(20, Math.min(refW - v, prev.width)),
                       }));
                     }}
                     className="w-full h-7 px-2 bg-[#121318] border border-[#3b3e50] rounded font-mono text-white outline-hidden focus:border-sky-500"
@@ -794,8 +1063,8 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
                       const v = Math.max(0, parseInt(e.target.value, 10) || 0);
                       setCropRect((prev) => ({
                         ...prev,
-                        y: v,
-                        height: Math.min(refH - v, prev.height),
+                        y: Math.min(refH - 20, v),
+                        height: Math.max(20, Math.min(refH - v, prev.height)),
                       }));
                     }}
                     className="w-full h-7 px-2 bg-[#121318] border border-[#3b3e50] rounded font-mono text-white outline-hidden focus:border-sky-500"
@@ -913,7 +1182,10 @@ export const BatchPageCropModal: React.FC<BatchPageCropModalProps> = ({
                   title={`Apply crop area to ${affectedIndices.length} pages`}
                 >
                   <Crop className="w-3.5 h-3.5" />
-                  <span>Apply Crop ({affectedIndices.length} {affectedIndices.length === 1 ? 'Page' : 'Pages'})</span>
+                  <span>
+                    Apply Crop ({affectedIndices.length}{' '}
+                    {affectedIndices.length === 1 ? 'Page' : 'Pages'})
+                  </span>
                 </button>
               </>
             )}

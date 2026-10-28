@@ -1,13 +1,14 @@
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName } from 'pdf-lib';
 import { PDFRect, PageInfo } from '../types/pdf';
-import { parsePageRangeInput, formatPageIndicesToRange } from './pdfColorInverter';
-import { rotatePdfRect } from './pdfCoordinates';
+import { parsePageRangeInput } from './pdfColorInverter';
+import { mapVisibleCropToPdfBox } from './pdfCoordinates';
 
 export type BatchCropTargetScope =
   | 'current'
   | 'all'
   | 'odd'
   | 'even'
+  | 'selected'
   | 'custom';
 
 export interface BatchCropOptions {
@@ -15,6 +16,7 @@ export interface BatchCropOptions {
   cropRect: PDFRect; // in visible PDF points on reference page (x, y from bottom-left)
   scope: BatchCropTargetScope;
   customRange?: string; // e.g. "1-5, 8, 10-15"
+  selectedPages?: number[]; // 0-indexed page indices for 'selected' scope
   sameSizeOnly: boolean; // default true
 }
 
@@ -35,13 +37,15 @@ export interface BatchCropResult {
 }
 
 /**
- * Resolves target 0-indexed page indices based on scope and custom range string.
+ * Resolves target 0-indexed page indices based on scope, custom range string,
+ * or explicitly selected page indices.
  */
 export function resolveTargetPageIndices(
   scope: BatchCropTargetScope,
   totalPages: number,
   currentPageIndex: number,
-  customRange = ''
+  customRange = '',
+  selectedPages: number[] = []
 ): number[] {
   if (totalPages <= 0) return [];
 
@@ -66,6 +70,16 @@ export function resolveTargetPageIndices(
         (i) => (i + 1) % 2 === 0
       );
 
+    case 'selected': {
+      const valid = Array.isArray(selectedPages)
+        ? selectedPages.filter(
+            (idx) => typeof idx === 'number' && idx >= 0 && idx < totalPages
+          )
+        : [];
+      const uniqueSorted = Array.from(new Set(valid)).sort((a, b) => a - b);
+      return uniqueSorted.length > 0 ? uniqueSorted : [safeCurrent];
+    }
+
     case 'custom': {
       const parsed = parsePageRangeInput(customRange, totalPages);
       return parsed.length > 0 ? parsed : [safeCurrent];
@@ -77,35 +91,12 @@ export function resolveTargetPageIndices(
 }
 
 /**
- * Maps a visible PDFRect from visible rotated page coordinates back to unrotated base page space.
- */
-function unrotateCropRect(
-  rect: PDFRect,
-  visibleWidth: number,
-  visibleHeight: number,
-  rotationDegrees: number
-): PDFRect {
-  const normalized = ((rotationDegrees % 360) + 360) % 360;
-  const cwSteps = Math.round(normalized / 90) % 4;
-  if (cwSteps === 0) return rect;
-
-  const ccwStepsNeeded = (4 - cwSteps) % 4;
-  let r = { ...rect };
-  let w = visibleWidth;
-  let h = visibleHeight;
-  for (let s = 0; s < ccwStepsNeeded; s++) {
-    r = rotatePdfRect(r, w, h, 'ccw');
-    const nextW = h;
-    const nextH = w;
-    w = nextW;
-    h = nextH;
-  }
-  return r;
-}
-
-/**
  * Applies batch cropping across target pages in the source PDF document using pdf-lib.
- * Sets CropBox and MediaBox for each target page while maintaining vector quality and local processing.
+ * Sets CropBox, MediaBox, BleedBox, TrimBox, and ArtBox for each target page with exact
+ * coordinate mapping across all orientations (0°, 90°, 180°, 270°) and base box origins.
+ *
+ * Maintains original PDF vector quality, selectable text, fonts, images at original
+ * resolution, transparency, and page rotation without rasterization.
  */
 export async function batchCropPdfPages(
   sourcePdfBytes: Uint8Array,
@@ -117,23 +108,52 @@ export async function batchCropPdfPages(
   const pdfDoc = await PDFDocument.load(sourcePdfBytes, { ignoreEncryption: true });
   const totalDocPages = pdfDoc.getPageCount();
 
+  if (totalDocPages <= 0) {
+    throw new Error('PDF document contains no pages.');
+  }
+
+  // Remove stale PDFForge state and base bytes so the newly cropped document
+  // permanently becomes the ground truth base document upon re-opening and saving
+  try {
+    pdfDoc.catalog.delete(PDFName.of('PDFForgeState'));
+    pdfDoc.catalog.delete(PDFName.of('PDFForgeBaseBytes'));
+  } catch {
+    // Ignore catalog delete errors
+  }
+
   const refIdx = Math.max(0, Math.min(totalDocPages - 1, options.referencePageIndex));
-  const refPageInfo = pages[refIdx];
   const refPage = pdfDoc.getPage(refIdx);
 
-  // Reference page visible dimensions
+  // Reference page geometry
   const refRotation = refPage.getRotation().angle || 0;
-  const refSize = refPage.getSize();
+  const refNormRot = ((refRotation % 360) + 360) % 360;
+  const refBox = refPage.getCropBox() || refPage.getMediaBox();
+  const refBaseW = refBox.width;
+  const refBaseH = refBox.height;
+
   const refVisibleWidth =
-    refPageInfo?.width || (refRotation % 180 !== 0 ? refSize.height : refSize.width);
+    refNormRot === 90 || refNormRot === 270 ? refBaseH : refBaseW;
   const refVisibleHeight =
-    refPageInfo?.height || (refRotation % 180 !== 0 ? refSize.width : refSize.height);
+    refNormRot === 90 || refNormRot === 270 ? refBaseW : refBaseH;
+
+  // Reference margins in visible points
+  const refLeftMargin = Math.max(0, options.cropRect.x);
+  const refBottomMargin = Math.max(0, options.cropRect.y);
+  const refRightMargin = Math.max(
+    0,
+    refVisibleWidth - (options.cropRect.x + options.cropRect.width)
+  );
+  const refTopMargin = Math.max(
+    0,
+    refVisibleHeight - (options.cropRect.y + options.cropRect.height)
+  );
 
   const targetIndices = resolveTargetPageIndices(
     options.scope,
     totalDocPages,
     refIdx,
-    options.customRange
+    options.customRange,
+    options.selectedPages
   );
 
   if (targetIndices.length === 0) {
@@ -151,55 +171,81 @@ export async function batchCropPdfPages(
 
     const pageIdx = targetIndices[i];
     const page = pdfDoc.getPage(pageIdx);
-    const pageInfo = pages[pageIdx];
 
     const pageRotation = page.getRotation().angle || 0;
-    const curSize = page.getSize();
-    const curVisibleWidth =
-      pageInfo?.width || (pageRotation % 180 !== 0 ? curSize.height : curSize.width);
-    const curVisibleHeight =
-      pageInfo?.height || (pageRotation % 180 !== 0 ? curSize.width : curSize.height);
+    const normRot = ((pageRotation % 360) + 360) % 360;
+    const curBox = page.getCropBox() || page.getMediaBox();
+    const curOriginX = curBox.x || 0;
+    const curOriginY = curBox.y || 0;
+    const curBaseW = curBox.width;
+    const curBaseH = curBox.height;
 
-    // If 'sameSizeOnly' is checked, skip pages that have different dimensions
-    if (options.sameSizeOnly) {
-      const diffW = Math.abs(curVisibleWidth - refVisibleWidth);
-      const diffH = Math.abs(curVisibleHeight - refVisibleHeight);
-      if (diffW > 2.5 || diffH > 2.5) {
-        skippedCount++;
-        processedCount++;
-        continue;
-      }
+    const curVisibleWidth =
+      normRot === 90 || normRot === 270 ? curBaseH : curBaseW;
+    const curVisibleHeight =
+      normRot === 90 || normRot === 270 ? curBaseW : curBaseH;
+
+    const isSameSize =
+      Math.abs(curVisibleWidth - refVisibleWidth) <= 2.5 &&
+      Math.abs(curVisibleHeight - refVisibleHeight) <= 2.5;
+
+    // If 'sameSizeOnly' is checked, skip pages that have different visible dimensions
+    if (options.sameSizeOnly && !isSameSize) {
+      skippedCount++;
+      processedCount++;
+      continue;
     }
 
-    // Clamp crop rectangle to this page's visible boundary
-    const clampedVisibleCrop: PDFRect = {
-      x: Math.max(0, Math.min(options.cropRect.x, curVisibleWidth - 10)),
-      y: Math.max(0, Math.min(options.cropRect.y, curVisibleHeight - 10)),
-      width: Math.max(10, Math.min(options.cropRect.width, curVisibleWidth - options.cropRect.x)),
-      height: Math.max(10, Math.min(options.cropRect.height, curVisibleHeight - options.cropRect.y)),
-    };
+    // Determine the visible crop rectangle for this specific page
+    let visibleCrop: PDFRect;
+    if (isSameSize) {
+      // For pages with matching dimensions: apply exact reference crop clamped to page bounds
+      const clampedX = Math.max(0, Math.min(options.cropRect.x, curVisibleWidth - 10));
+      const clampedY = Math.max(0, Math.min(options.cropRect.y, curVisibleHeight - 10));
+      const clampedW = Math.max(
+        10,
+        Math.min(options.cropRect.width, curVisibleWidth - clampedX)
+      );
+      const clampedH = Math.max(
+        10,
+        Math.min(options.cropRect.height, curVisibleHeight - clampedY)
+      );
+      visibleCrop = {
+        x: clampedX,
+        y: clampedY,
+        width: clampedW,
+        height: clampedH,
+      };
+    } else {
+      // For pages with different dimensions (when sameSizeOnly = false): apply identical margins
+      const curLeft = Math.max(0, Math.min(refLeftMargin, curVisibleWidth - 20));
+      const curBottom = Math.max(0, Math.min(refBottomMargin, curVisibleHeight - 20));
+      const curW = Math.max(10, curVisibleWidth - curLeft - Math.max(0, refRightMargin));
+      const curH = Math.max(10, curVisibleHeight - curBottom - Math.max(0, refTopMargin));
+      visibleCrop = {
+        x: curLeft,
+        y: curBottom,
+        width: curW,
+        height: curH,
+      };
+    }
 
-    // Unrotate crop rectangle back to unrotated base space
-    const baseCrop = unrotateCropRect(
-      clampedVisibleCrop,
+    // Map visible crop coordinates to unrotated PDF user space bounding box
+    const pdfBox = mapVisibleCropToPdfBox(
+      visibleCrop,
       curVisibleWidth,
       curVisibleHeight,
-      pageRotation
+      normRot,
+      curOriginX,
+      curOriginY
     );
 
-    // Current unrotated crop/media box origin
-    const existingBox = page.getCropBox() || page.getMediaBox();
-    const originX = existingBox.x || 0;
-    const originY = existingBox.y || 0;
-
-    const finalX = Math.round((originX + baseCrop.x) * 100) / 100;
-    const finalY = Math.round((originY + baseCrop.y) * 100) / 100;
-    const finalW = Math.max(10, Math.round(baseCrop.width * 100) / 100);
-    const finalH = Math.max(10, Math.round(baseCrop.height * 100) / 100);
-
-    // Apply crop box and media box
-    page.setCropBox(finalX, finalY, finalW, finalH);
-    page.setMediaBox(finalX, finalY, finalW, finalH);
+    // Set page boxes consistently across all box types
+    page.setCropBox(pdfBox.x, pdfBox.y, pdfBox.width, pdfBox.height);
+    page.setMediaBox(pdfBox.x, pdfBox.y, pdfBox.width, pdfBox.height);
+    page.setBleedBox(pdfBox.x, pdfBox.y, pdfBox.width, pdfBox.height);
+    page.setTrimBox(pdfBox.x, pdfBox.y, pdfBox.width, pdfBox.height);
+    page.setArtBox(pdfBox.x, pdfBox.y, pdfBox.width, pdfBox.height);
 
     affectedPageIndices.push(pageIdx);
     processedCount++;

@@ -1115,7 +1115,25 @@ export async function applyModificationsAndExport(
           const decoded = decodePDFRawStream(existingBaseObj as any);
           const unwrapped = decoded.decode();
           if (unwrapped && unwrapped.length > 0) {
-            cleanOriginalBytes = unwrapped;
+            try {
+              const testDoc = await PDFDocument.load(unwrapped, { ignoreEncryption: true });
+              if (testDoc.getPageCount() === checkDoc.getPageCount()) {
+                let allMatch = true;
+                for (let pi = 0; pi < checkDoc.getPageCount(); pi++) {
+                  const s1 = checkDoc.getPage(pi).getSize();
+                  const s2 = testDoc.getPage(pi).getSize();
+                  if (Math.abs(s1.width - s2.width) > 2 || Math.abs(s1.height - s2.height) > 2) {
+                    allMatch = false;
+                    break;
+                  }
+                }
+                if (allMatch) {
+                  cleanOriginalBytes = unwrapped;
+                }
+              }
+            } catch {
+              // Fall back to originalPdfBytes
+            }
           }
         }
       }

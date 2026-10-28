@@ -30,6 +30,12 @@ import {
   getCachedPageCanvas,
   setCachedPageCanvas,
 } from '../utils/pdfExtractor';
+import {
+  findIntersectingObjects,
+  findTopmostObjectAtPoint,
+  getEnclosingViewportRect,
+  normalizeRect,
+} from '../utils/selectionUtils';
 import { getCssFontStack } from '../utils/pdfModifier';
 import { invertCanvasPixels } from '../utils/pdfColorInverter';
 import { ToolMode } from './Header';
@@ -89,6 +95,7 @@ interface PDFCanvasViewerProps {
   activePageIndex: number;
   onActivePageChange: (index: number) => void;
   selectedObjectId: string | null;
+  selectedObjectIds?: Set<string>;
   editingTextObjectId?: string | null;
   onSetEditingTextObjectId?: (id: string | null) => void;
   matches: ObjectMatch[];
@@ -104,15 +111,22 @@ interface PDFCanvasViewerProps {
   scrollToPageIndex: number | null;
   onScrollComplete?: () => void;
   onSelectObject: (obj: PDFObject | null) => void;
+  onSelectObjects?: (objs: PDFObject[]) => void;
   onCopyObject: (obj: PDFObject) => void;
   onCreateCroppedObject?: (croppedObj: PDFObject) => void;
   onDeleteObject: (objId: string, pageIndex?: number) => void;
+  onDeleteObjects?: (objIds: string[], pageIndex?: number) => void;
   onUpdateObjectBounds: (
     objId: string,
     bounds: { x: number; y: number; width: number; height: number },
     pageIndex?: number,
     commitHistory?: boolean,
     updatedFontSize?: number
+  ) => void;
+  onUpdateMultipleObjectsBounds?: (
+    updates: { objId: string; bounds: PDFRect; updatedFontSize?: number }[],
+    pageIndex?: number,
+    commitHistory?: boolean
   ) => void;
   onRotateObject?: (
     objId: string,
@@ -159,6 +173,7 @@ interface PageItemProps {
   objects: PDFObject[];
   pageModifications: PageModifications;
   selectedObjectId: string | null;
+  selectedObjectIds?: Set<string>;
   editingTextObjectId: string | null;
   matchedIdsOnPage: Set<string>;
   searchMatchedIdsOnPage: Set<string>;
@@ -167,6 +182,12 @@ interface PageItemProps {
   isDrawingCrop: boolean;
   isCropActiveOnThisPage: boolean;
   cropMarquee: ViewportRect | null;
+  selectionMarquee?: ViewportRect | null;
+  onStartSelectionMarquee: (
+    e: React.MouseEvent,
+    pageIndex: number,
+    targetObj?: PDFObject | null
+  ) => void;
   primaryMode?: 'edit' | 'annotate';
   activeAnnotationType?: AnnotationType | null;
   annotationColor?: string;
@@ -178,6 +199,7 @@ interface PageItemProps {
   onUpdateAnnotation?: (annot: AnnotationItem) => void;
   onDeleteAnnotation?: (id: string) => void;
   onSelectObject: (obj: PDFObject | null) => void;
+  onSelectObjects?: (objs: PDFObject[]) => void;
   onStartEditText: (obj: PDFObject, pageIndex: number) => void;
   onStopEditText: () => void;
   onUpdateTextObject?: (
@@ -205,6 +227,7 @@ interface PageItemProps {
   onTriggerCopy: (e: React.MouseEvent, obj: PDFObject) => void;
   onFindEverywhere: (obj: PDFObject) => void;
   onDeleteObject: (objId: string, pageIndex: number) => void;
+  onDeleteSelectedObjects?: () => void;
   isDrawingFreehandOnThisPage?: boolean;
   freehandPoints?: { x: number; y: number }[];
   drawColor?: string;
@@ -228,6 +251,7 @@ const PageItemComponent: React.FC<PageItemProps> = ({
   objects,
   pageModifications,
   selectedObjectId,
+  selectedObjectIds,
   editingTextObjectId,
   matchedIdsOnPage,
   searchMatchedIdsOnPage,
@@ -236,6 +260,8 @@ const PageItemComponent: React.FC<PageItemProps> = ({
   isDrawingCrop,
   isCropActiveOnThisPage,
   cropMarquee,
+  selectionMarquee,
+  onStartSelectionMarquee,
   primaryMode,
   activeAnnotationType,
   annotationColor,
@@ -247,6 +273,7 @@ const PageItemComponent: React.FC<PageItemProps> = ({
   onUpdateAnnotation,
   onDeleteAnnotation,
   onSelectObject,
+  onSelectObjects,
   onStartEditText,
   onStopEditText,
   onUpdateTextObject,
@@ -259,6 +286,7 @@ const PageItemComponent: React.FC<PageItemProps> = ({
   onTriggerCopy,
   onFindEverywhere,
   onDeleteObject,
+  onDeleteSelectedObjects,
   isDrawingFreehandOnThisPage,
   freehandPoints,
   drawColor = '#dc2626',
@@ -272,6 +300,11 @@ const PageItemComponent: React.FC<PageItemProps> = ({
   const pageContainerRef = useRef<HTMLDivElement>(null);
   const inlineTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [renderReady, setRenderReady] = useState(false);
+
+  const effectiveSelectedIds = useMemo(() => {
+    if (selectedObjectIds && selectedObjectIds.size > 0) return selectedObjectIds;
+    return new Set(selectedObjectId ? [selectedObjectId] : []);
+  }, [selectedObjectIds, selectedObjectId]);
 
   // Auto-focus inline text editor when activated on this page
   useEffect(() => {
@@ -519,11 +552,9 @@ const PageItemComponent: React.FC<PageItemProps> = ({
       onAddTextAtPoint?.(e, pageInfo.pageIndex);
     } else if (activeTool === 'image') {
       onAddImageAtPoint?.(e, pageInfo.pageIndex);
-    } else {
-      if (e.target === e.currentTarget) {
-        onStopEditText();
-        onSelectObject(null);
-      }
+    } else if (activeTool === 'select') {
+      onStopEditText();
+      onStartSelectionMarquee(e, pageInfo.pageIndex, null);
     }
   };
 
@@ -766,7 +797,10 @@ const PageItemComponent: React.FC<PageItemProps> = ({
       {/* INTERACTIVE OBJECTS OVERLAY (Always rendered when mounted so pasted/cropped objects are immediately visible) */}
       {(isCanvasMounted || renderReady) &&
         allCurrentObjects.map((obj) => {
-          const isSelected = obj.id === selectedObjectId;
+          const isSelected = effectiveSelectedIds.has(obj.id);
+          const isPrimarySelected =
+            obj.id === selectedObjectId ||
+            (effectiveSelectedIds.has(obj.id) && effectiveSelectedIds.values().next().value === obj.id);
           const isEditingThisText = obj.type === 'text' && obj.id === editingTextObjectId;
           const isMatched = matchedIdsOnPage.has(obj.id);
           const isSearchMatched = searchMatchedIdsOnPage.has(obj.id);
@@ -812,7 +846,28 @@ const PageItemComponent: React.FC<PageItemProps> = ({
                 if (activeTool === 'draw') return;
                 if (isToolCreationMode && !isSelected) return;
                 e.stopPropagation();
-                onSelectObject(obj);
+                if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                  const nextSet = new Set(effectiveSelectedIds);
+                  if (nextSet.has(obj.id)) {
+                    nextSet.delete(obj.id);
+                  } else {
+                    nextSet.add(obj.id);
+                  }
+                  const selectedObjs = allCurrentObjects.filter((o) => nextSet.has(o.id));
+                  if (onSelectObjects) {
+                    onSelectObjects(selectedObjs);
+                  } else if (selectedObjs.length > 0) {
+                    onSelectObject(selectedObjs[0]);
+                  } else {
+                    onSelectObject(null);
+                  }
+                } else {
+                  if (onSelectObjects) {
+                    onSelectObjects([obj]);
+                  } else {
+                    onSelectObject(obj);
+                  }
+                }
               }}
               onDoubleClick={(e) => {
                 if (activeTool === 'draw') return;
@@ -828,7 +883,15 @@ const PageItemComponent: React.FC<PageItemProps> = ({
                   // Allow clicking inside the textarea without starting a move drag
                   return;
                 }
-                onObjectMouseDown(e, obj, pageInfo.pageIndex, 'move');
+                if (activeTool === 'select') {
+                  if (isSelected) {
+                    onObjectMouseDown(e, obj, pageInfo.pageIndex, 'move');
+                  } else {
+                    onStartSelectionMarquee(e, pageInfo.pageIndex, obj);
+                  }
+                } else {
+                  onObjectMouseDown(e, obj, pageInfo.pageIndex, 'move');
+                }
               }}
               className={`absolute group transition-shadow duration-150 ${
                 activeTool === 'draw' ||
@@ -979,7 +1042,46 @@ const PageItemComponent: React.FC<PageItemProps> = ({
               )}
 
               {/* REFINED SELECTION CONTROLS & FLOATING TOOLBAR */}
-              {isSelected && (
+              {isSelected && effectiveSelectedIds.size > 1 && isPrimarySelected && (
+                <div
+                  className={`absolute ${
+                    vpRect.y < 52 ? '-bottom-12' : '-top-12'
+                  } right-0 flex items-center space-x-1.5 bg-[#1e1e1e] border border-[#383838] px-2.5 py-1 rounded-lg shadow-2xl z-50 whitespace-nowrap`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <span className="text-xs font-semibold text-neutral-200">
+                    {effectiveSelectedIds.size} objects selected
+                  </span>
+                  <div className="w-[1px] h-4 bg-[#383838] mx-1" />
+                  <button
+                    type="button"
+                    onClick={(e) => onTriggerCopy(e, obj)}
+                    title="Copy Selected (Ctrl+C)"
+                    className="px-2 py-1 text-xs font-semibold text-neutral-200 hover:text-white hover:bg-[#282828] rounded flex items-center space-x-1 transition cursor-pointer"
+                  >
+                    <Copy className="w-3 h-3 text-blue-400" />
+                    <span>Copy</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onDeleteSelectedObjects) {
+                        onDeleteSelectedObjects();
+                      } else {
+                        onDeleteObject(obj.id, pageInfo.pageIndex);
+                      }
+                    }}
+                    title="Delete Selected Objects (Delete)"
+                    className="p-1 text-red-400 hover:text-red-300 hover:bg-red-950/50 rounded transition cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {isSelected && effectiveSelectedIds.size <= 1 && (
                 <>
                   {/* Dimension & Hint Tag (kept unrotated-readable) */}
                   <div
@@ -1349,6 +1451,19 @@ const PageItemComponent: React.FC<PageItemProps> = ({
           opacity={annotationOpacity || 1}
           isDrawingMode={primaryMode === 'annotate'}
         />
+
+        {/* Professional Marquee Selection Rectangle Overlay */}
+        {selectionMarquee && selectionMarquee.width > 0 && selectionMarquee.height > 0 && (
+          <div
+            className="absolute border border-[#0265dc] bg-blue-500/15 pointer-events-none z-45"
+            style={{
+              left: `${selectionMarquee.x}px`,
+              top: `${selectionMarquee.y}px`,
+              width: `${selectionMarquee.width}px`,
+              height: `${selectionMarquee.height}px`,
+            }}
+          />
+        )}
     </div>
   );
 };
@@ -1377,6 +1492,8 @@ const PageItem = React.memo(PageItemComponent, (prev, next) => {
     prev.isDrawingCrop !== next.isDrawingCrop ||
     prev.isCropActiveOnThisPage !== next.isCropActiveOnThisPage ||
     prev.cropMarquee !== next.cropMarquee ||
+    prev.selectionMarquee !== next.selectionMarquee ||
+    prev.selectedObjectIds !== next.selectedObjectIds ||
     prev.isDrawingFreehandOnThisPage !== next.isDrawingFreehandOnThisPage ||
     prev.freehandPoints !== next.freehandPoints ||
     prev.drawColor !== next.drawColor ||
@@ -1436,6 +1553,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
   activePageIndex,
   onActivePageChange,
   selectedObjectId,
+  selectedObjectIds,
   editingTextObjectId: externalEditingTextId,
   onSetEditingTextObjectId,
   matches,
@@ -1451,10 +1569,13 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
   scrollToPageIndex,
   onScrollComplete,
   onSelectObject,
+  onSelectObjects,
   onCopyObject,
   onCreateCroppedObject,
   onDeleteObject,
+  onDeleteObjects,
   onUpdateObjectBounds,
+  onUpdateMultipleObjectsBounds,
   onRotateObject,
   onUpdateTextObject,
   onFindEverywhere,
@@ -1502,13 +1623,28 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
   const [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null);
   const [cropMarquee, setCropMarquee] = useState<ViewportRect | null>(null);
 
+  // Professional Marquee Selection Tool State
+  const [selectionPageIndex, setSelectionPageIndex] = useState<number | null>(null);
+  const [selectionMarquee, setSelectionMarquee] = useState<ViewportRect | null>(null);
+  const [isSelectionActive, setIsSelectionActive] = useState<boolean>(false);
+  const selectionDragRef = useRef<{
+    pageIndex: number;
+    startX: number;
+    startY: number;
+    targetObj: PDFObject | null;
+    hasDragged: boolean;
+    isShift: boolean;
+    isCtrlOrMeta: boolean;
+    startSelectedIds: Set<string>;
+  } | null>(null);
+
   // Freehand Draw Tool State
   const [freehandPageIndex, setFreehandPageIndex] = useState<number | null>(null);
   const [isDrawingFreehand, setIsDrawingFreehand] = useState(false);
   const [freehandPoints, setFreehandPoints] = useState<{ x: number; y: number }[]>([]);
   const freehandPointsRef = useRef<{ x: number; y: number }[]>([]);
 
-  // Active interaction drag state for moving/resizing/rotating
+  // Active interaction drag state for moving/resizing/rotating (with multi-object drag support)
   const [dragState, setDragState] = useState<{
     mode: DragMode;
     pageIndex: number;
@@ -1521,6 +1657,13 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
     centerY: number;
     initialVpRect: ViewportRect;
     aspectRatio: number;
+    items?: {
+      objectId: string;
+      initialVpRect: ViewportRect;
+      objectType: 'image' | 'text' | 'vector';
+      initialFontSize?: number;
+      bounds: PDFRect;
+    }[];
   } | null>(null);
 
   // Track latest computed drag geometry/rotation so mouseup commits the exact final state
@@ -1530,6 +1673,11 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
     bounds?: { x: number; y: number; width: number; height: number };
     updatedFontSize?: number;
     rotation?: number;
+    multipleUpdates?: {
+      objId: string;
+      bounds: PDFRect;
+      updatedFontSize?: number;
+    }[];
   } | null>(null);
   const dragRafRef = useRef<number | null>(null);
   const scrollRafRef = useRef<number | null>(null);
@@ -2199,6 +2347,190 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
     [extractCroppedPDFObject, onCopyObject, showTimedNotification]
   );
 
+  // ================= PROFESSIONAL MARQUEE SELECTION LOGIC =================
+  const handleStartSelectionMarquee = useCallback(
+    (e: React.MouseEvent, pageIndex: number, targetObj?: PDFObject | null) => {
+      if (activeTool !== 'select') return;
+      e.stopPropagation();
+
+      const pageEl = document.getElementById(`page-container-${pageIndex}`);
+      if (!pageEl) return;
+      const rect = pageEl.getBoundingClientRect();
+      const startX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+      const startY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+
+      const isShift = e.shiftKey;
+      const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+      const currentSelectedIds =
+        selectedObjectIds && selectedObjectIds.size > 0
+          ? new Set(selectedObjectIds)
+          : new Set(selectedObjectId ? [selectedObjectId] : []);
+
+      selectionDragRef.current = {
+        pageIndex,
+        startX,
+        startY,
+        targetObj: targetObj || null,
+        hasDragged: false,
+        isShift,
+        isCtrlOrMeta,
+        startSelectedIds: currentSelectedIds,
+      };
+
+      setSelectionPageIndex(pageIndex);
+      setIsSelectionActive(true);
+      setSelectionMarquee(null);
+      onActivePageChange(pageIndex);
+    },
+    [activeTool, selectedObjectIds, selectedObjectId, onActivePageChange]
+  );
+
+  const handleSelectionMouseMove = useCallback(
+    (e: MouseEvent) => {
+      const drag = selectionDragRef.current;
+      if (!drag) return;
+
+      const pageEl = document.getElementById(`page-container-${drag.pageIndex}`);
+      if (!pageEl) return;
+      const pageInfo = pages[drag.pageIndex];
+      if (!pageInfo) return;
+
+      const rect = pageEl.getBoundingClientRect();
+      const currentX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+      const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+
+      const dist = Math.hypot(currentX - drag.startX, currentY - drag.startY);
+      if (dist >= 4) {
+        drag.hasDragged = true;
+      }
+
+      if (drag.hasDragged) {
+        const marquee = normalizeRect({
+          x: Math.min(drag.startX, currentX),
+          y: Math.min(drag.startY, currentY),
+          width: Math.abs(currentX - drag.startX),
+          height: Math.abs(currentY - drag.startY),
+        });
+        setSelectionMarquee(marquee);
+
+        const pageObjs = pageObjectsMap.get(drag.pageIndex) || EMPTY_OBJECTS;
+        const pageMods = modifications[drag.pageIndex] || EMPTY_PAGE_MODS;
+        const allObjsOnPage = [
+          ...pageObjs.filter(
+            (o) => !pageMods.removedObjectIds.includes(o.id) && !o.isFullPageBackground
+          ),
+          ...(pageMods.pastedObjects || []).filter((o) => !o.isFullPageBackground),
+        ];
+
+        const intersecting = findIntersectingObjects(
+          marquee,
+          allObjsOnPage,
+          pageInfo.height,
+          zoom,
+          pageMods.removedObjectIds
+        );
+
+        let newSelected = new Set<string>();
+        if (drag.isShift || drag.isCtrlOrMeta) {
+          newSelected = new Set(drag.startSelectedIds);
+          for (const obj of intersecting) {
+            newSelected.add(obj.id);
+          }
+        } else {
+          for (const obj of intersecting) {
+            newSelected.add(obj.id);
+          }
+        }
+
+        const selectedList = allObjsOnPage.filter((o) => newSelected.has(o.id));
+        if (onSelectObjects) {
+          onSelectObjects(selectedList);
+        } else if (selectedList.length > 0) {
+          onSelectObject(selectedList[0]);
+        } else {
+          onSelectObject(null);
+        }
+      }
+    },
+    [pages, pageObjectsMap, modifications, zoom, onSelectObjects, onSelectObject]
+  );
+
+  const handleSelectionMouseUp = useCallback(() => {
+    const drag = selectionDragRef.current;
+    if (!drag) return;
+
+    if (!drag.hasDragged) {
+      if (drag.targetObj) {
+        if (drag.isShift || drag.isCtrlOrMeta) {
+          const nextSet = new Set(drag.startSelectedIds);
+          if (nextSet.has(drag.targetObj.id)) {
+            nextSet.delete(drag.targetObj.id);
+          } else {
+            nextSet.add(drag.targetObj.id);
+          }
+          const pageObjs = pageObjectsMap.get(drag.pageIndex) || EMPTY_OBJECTS;
+          const pageMods = modifications[drag.pageIndex] || EMPTY_PAGE_MODS;
+          const allObjs = [
+            ...pageObjs.filter((o) => !pageMods.removedObjectIds.includes(o.id)),
+            ...(pageMods.pastedObjects || []),
+          ];
+          const objs = allObjs.filter((o) => nextSet.has(o.id));
+          if (onSelectObjects) {
+            onSelectObjects(objs);
+          } else if (objs.length > 0) {
+            onSelectObject(objs[0]);
+          } else {
+            onSelectObject(null);
+          }
+        } else {
+          if (onSelectObjects) {
+            onSelectObjects([drag.targetObj]);
+          } else {
+            onSelectObject(drag.targetObj);
+          }
+        }
+      } else {
+        if (!drag.isShift && !drag.isCtrlOrMeta) {
+          if (onSelectObjects) {
+            onSelectObjects([]);
+          } else {
+            onSelectObject(null);
+          }
+        }
+      }
+    }
+
+    selectionDragRef.current = null;
+    setIsSelectionActive(false);
+    setSelectionMarquee(null);
+    setSelectionPageIndex(null);
+  }, [pageObjectsMap, modifications, onSelectObjects, onSelectObject]);
+
+  useEffect(() => {
+    if (isSelectionActive) {
+      window.addEventListener('mousemove', handleSelectionMouseMove);
+      window.addEventListener('mouseup', handleSelectionMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handleSelectionMouseMove);
+        window.removeEventListener('mouseup', handleSelectionMouseUp);
+      };
+    }
+  }, [isSelectionActive, handleSelectionMouseMove, handleSelectionMouseUp]);
+
+  const handleDeleteSelectedObjects = useCallback(() => {
+    if (selectedObjectIds && selectedObjectIds.size > 0) {
+      if (onDeleteObjects) {
+        onDeleteObjects(Array.from(selectedObjectIds), activePageIndex);
+      } else {
+        for (const id of selectedObjectIds) {
+          onDeleteObject(id, activePageIndex);
+        }
+      }
+    } else if (selectedObjectId) {
+      onDeleteObject(selectedObjectId, activePageIndex);
+    }
+  }, [selectedObjectIds, selectedObjectId, onDeleteObjects, onDeleteObject, activePageIndex]);
+
   // ================= OBJECT DRAG, RESIZE & ROTATE LOGIC =================
   const handleObjectMouseDown = useCallback(
     (
@@ -2219,7 +2551,6 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
         setEditingTextObjectId(null);
       }
 
-      onSelectObject(obj);
       onActivePageChange(pageIndex);
       setCropMarquee(null);
       setCropPageIndex(null);
@@ -2238,6 +2569,59 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
 
       latestDragUpdateRef.current = null;
 
+      const pageObjs = pageObjectsMap.get(pageIndex) || EMPTY_OBJECTS;
+      const pageMods = modifications[pageIndex] || EMPTY_PAGE_MODS;
+      const allObjsOnPage = [
+        ...pageObjs.filter(
+          (o) => !pageMods.removedObjectIds.includes(o.id) && !o.isFullPageBackground
+        ),
+        ...(pageMods.pastedObjects || []).filter((o) => !o.isFullPageBackground),
+      ];
+
+      const currentSelected =
+        selectedObjectIds && selectedObjectIds.size > 0
+          ? selectedObjectIds
+          : new Set(selectedObjectId ? [selectedObjectId] : []);
+
+      const itemsToDrag: {
+        objectId: string;
+        initialVpRect: ViewportRect;
+        objectType: 'image' | 'text' | 'vector';
+        initialFontSize?: number;
+        bounds: PDFRect;
+      }[] = [];
+
+      if (mode === 'move' && currentSelected.has(obj.id)) {
+        for (const o of allObjsOnPage) {
+          if (currentSelected.has(o.id)) {
+            itemsToDrag.push({
+              objectId: o.id,
+              initialVpRect: pdfToViewportRect(o.bounds, pageInfo.height, zoom),
+              objectType: o.type,
+              initialFontSize: o.fontSize,
+              bounds: { ...o.bounds },
+            });
+          }
+        }
+      }
+
+      if (itemsToDrag.length === 0) {
+        itemsToDrag.push({
+          objectId: obj.id,
+          initialVpRect: vpRect,
+          objectType: obj.type,
+          initialFontSize: obj.fontSize,
+          bounds: { ...obj.bounds },
+        });
+        if (!currentSelected.has(obj.id)) {
+          if (onSelectObjects) {
+            onSelectObjects([obj]);
+          } else {
+            onSelectObject(obj);
+          }
+        }
+      }
+
       setDragState({
         mode,
         pageIndex,
@@ -2250,9 +2634,23 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
         centerY,
         initialVpRect: vpRect,
         aspectRatio,
+        items: itemsToDrag,
       });
     },
-    [activeTool, pages, editingTextObjectId, setEditingTextObjectId, onSelectObject, onActivePageChange, zoom]
+    [
+      activeTool,
+      pages,
+      editingTextObjectId,
+      setEditingTextObjectId,
+      onSelectObject,
+      onSelectObjects,
+      onActivePageChange,
+      zoom,
+      pageObjectsMap,
+      modifications,
+      selectedObjectIds,
+      selectedObjectId,
+    ]
   );
 
   const handleMouseMoveListener = useCallback(
@@ -2292,6 +2690,60 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
 
       const dx = e.clientX - dragState.startX;
       const dy = e.clientY - dragState.startY;
+
+      // Handle simultaneous multi-object move
+      if (dragState.mode === 'move' && dragState.items && dragState.items.length > 1) {
+        const multipleUpdates: {
+          objId: string;
+          bounds: PDFRect;
+          updatedFontSize?: number;
+        }[] = [];
+
+        for (const item of dragState.items) {
+          const itemNewVp: ViewportRect = {
+            ...item.initialVpRect,
+            x: item.initialVpRect.x + dx,
+            y: item.initialVpRect.y + dy,
+          };
+          const updatedPdfRect = viewportToPdfRect(itemNewVp, pageInfo.height, zoom);
+          const clamped = clampPdfRect(updatedPdfRect, pageInfo.width, pageInfo.height);
+          multipleUpdates.push({
+            objId: item.objectId,
+            bounds: clamped,
+            updatedFontSize: item.initialFontSize,
+          });
+        }
+
+        latestDragUpdateRef.current = {
+          objectId: dragState.objectId,
+          pageIndex: dragState.pageIndex,
+          multipleUpdates,
+        };
+
+        if (dragRafRef.current === null) {
+          dragRafRef.current = window.requestAnimationFrame(() => {
+            dragRafRef.current = null;
+            const latest = latestDragUpdateRef.current;
+            if (latest && latest.multipleUpdates) {
+              if (onUpdateMultipleObjectsBounds) {
+                onUpdateMultipleObjectsBounds(latest.multipleUpdates, latest.pageIndex, false);
+              } else {
+                for (const u of latest.multipleUpdates) {
+                  onUpdateObjectBounds(
+                    u.objId,
+                    u.bounds,
+                    latest.pageIndex,
+                    false,
+                    u.updatedFontSize
+                  );
+                }
+              }
+            }
+          });
+        }
+        return;
+      }
+
       const init = dragState.initialVpRect;
       const newVp: ViewportRect = { ...init };
 
@@ -2448,7 +2900,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
         });
       }
     },
-    [dragState, pages, zoom, onUpdateObjectBounds, onRotateObject]
+    [dragState, pages, zoom, onUpdateObjectBounds, onUpdateMultipleObjectsBounds, onRotateObject]
   );
 
   const handleMouseUpListener = useCallback(() => {
@@ -2459,7 +2911,21 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
     if (latestDragUpdateRef.current) {
       const finalUpdate = latestDragUpdateRef.current;
       latestDragUpdateRef.current = null;
-      if (finalUpdate.rotation !== undefined) {
+      if (finalUpdate.multipleUpdates && finalUpdate.multipleUpdates.length > 0) {
+        if (onUpdateMultipleObjectsBounds) {
+          onUpdateMultipleObjectsBounds(finalUpdate.multipleUpdates, finalUpdate.pageIndex, true);
+        } else {
+          for (const u of finalUpdate.multipleUpdates) {
+            onUpdateObjectBounds(
+              u.objId,
+              u.bounds,
+              finalUpdate.pageIndex,
+              true,
+              u.updatedFontSize
+            );
+          }
+        }
+      } else if (finalUpdate.rotation !== undefined) {
         onRotateObject?.(
           finalUpdate.objectId,
           finalUpdate.rotation,
@@ -2479,7 +2945,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
     if (dragState) {
       setDragState(null);
     }
-  }, [dragState, onUpdateObjectBounds, onRotateObject]);
+  }, [dragState, onUpdateObjectBounds, onUpdateMultipleObjectsBounds, onRotateObject]);
 
   useEffect(() => {
     if (dragState) {
@@ -2626,23 +3092,6 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
         </button>
       </div>
 
-      {/* Scanned Page Detected Prompt Pill */}
-      {isCurrentPageScanned && onOpenOcrModal && (
-        <div className="sticky top-3 z-30 mx-auto max-w-[calc(100%-1.5rem)] w-fit bg-[#18202c]/95 backdrop-blur-md border border-cyan-500/40 shadow-xl rounded-full px-3 sm:px-4 py-1.5 flex flex-wrap items-center justify-center gap-2 text-xs text-neutral-200 animate-in fade-in duration-150">
-          <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-          <span className="truncate">
-            Page {activePageIndex + 1} appears to be a scanned image.
-          </span>
-          <button
-            type="button"
-            onClick={onOpenOcrModal}
-            className="px-2.5 py-1 rounded-full bg-[#0265dc] hover:bg-[#0151b0] text-white font-semibold text-[11px] transition cursor-pointer shadow-xs shrink-0"
-          >
-            Extract Text (OCR)
-          </button>
-        </div>
-      )}
-
       {/* VIEWPORT SURFACE: Continuous vs Single Page */}
       {viewMode === 'continuous' ? (
         <div className="flex flex-col items-center py-4 sm:py-6 px-2 sm:px-4 space-y-6 min-h-full">
@@ -2664,6 +3113,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
                 objects={pageObjs}
                 pageModifications={pageMods}
                 selectedObjectId={selectedObjectId}
+                selectedObjectIds={selectedObjectIds}
                 editingTextObjectId={editingTextObjectId}
                 matchedIdsOnPage={matchedIds}
                 searchMatchedIdsOnPage={searchMatchedIds}
@@ -2672,7 +3122,10 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
                 isDrawingCrop={isDrawingCrop}
                 isCropActiveOnThisPage={cropPageIndex === page.pageIndex}
                 cropMarquee={cropPageIndex === page.pageIndex ? cropMarquee : null}
+                selectionMarquee={selectionPageIndex === page.pageIndex ? selectionMarquee : null}
+                onStartSelectionMarquee={handleStartSelectionMarquee}
                 onSelectObject={onSelectObject}
+                onSelectObjects={onSelectObjects}
                 onStartEditText={handleStartEditText}
                 onStopEditText={handleStopEditText}
                 onUpdateTextObject={onUpdateTextObject}
@@ -2685,6 +3138,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
                 onTriggerCopy={handleTriggerCopy}
                 onFindEverywhere={onFindEverywhere}
                 onDeleteObject={onDeleteObject}
+                onDeleteSelectedObjects={handleDeleteSelectedObjects}
                 isDrawingFreehandOnThisPage={
                   isDrawingFreehand && freehandPageIndex === page.pageIndex
                 }
@@ -2724,6 +3178,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
             objects={pageObjectsMap.get(singlePageInfo.pageIndex) || EMPTY_OBJECTS}
             pageModifications={modifications[singlePageInfo.pageIndex] || EMPTY_PAGE_MODS}
             selectedObjectId={selectedObjectId}
+            selectedObjectIds={selectedObjectIds}
             editingTextObjectId={editingTextObjectId}
             matchedIdsOnPage={matchesByPage.get(singlePageInfo.pageIndex) || EMPTY_MATCH_SET}
             searchMatchedIdsOnPage={
@@ -2734,7 +3189,10 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
             isDrawingCrop={isDrawingCrop}
             isCropActiveOnThisPage={cropPageIndex === singlePageInfo.pageIndex}
             cropMarquee={cropPageIndex === singlePageInfo.pageIndex ? cropMarquee : null}
+            selectionMarquee={selectionPageIndex === singlePageInfo.pageIndex ? selectionMarquee : null}
+            onStartSelectionMarquee={handleStartSelectionMarquee}
             onSelectObject={onSelectObject}
+            onSelectObjects={onSelectObjects}
             onStartEditText={handleStartEditText}
             onStopEditText={handleStopEditText}
             onUpdateTextObject={onUpdateTextObject}
@@ -2747,6 +3205,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
             onTriggerCopy={handleTriggerCopy}
             onFindEverywhere={onFindEverywhere}
             onDeleteObject={onDeleteObject}
+            onDeleteSelectedObjects={handleDeleteSelectedObjects}
             isDrawingFreehandOnThisPage={
               isDrawingFreehand && freehandPageIndex === singlePageInfo.pageIndex
             }

@@ -55,11 +55,11 @@ export function resolveHeaderFooterTemplate(
   const cleanFile = (filename || 'Document.pdf').replace(/\.pdf$/i, '');
 
   return template
-    .replace(/\{page\}/gi, String(pageNumber))
-    .replace(/\{total\}/gi, String(totalPages))
-    .replace(/\{date\}/gi, dateStr)
-    .replace(/\{time\}/gi, timeStr)
-    .replace(/\{filename\}/gi, cleanFile);
+    .replace(/\{page\}|\[page\]|%page%|<<page>>/gi, String(pageNumber))
+    .replace(/\{total\}|\[total\]|%total%|<<total>>/gi, String(totalPages))
+    .replace(/\{date\}|\[date\]|%date%|<<date>>/gi, dateStr)
+    .replace(/\{time\}|\[time\]|%time%|<<time>>/gi, timeStr)
+    .replace(/\{filename\}|\[filename\]|%filename%|<<filename>>|\{file\}|\[file\]/gi, cleanFile);
 }
 
 export const HeaderFooterModal: React.FC<HeaderFooterModalProps> = ({

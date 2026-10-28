@@ -495,6 +495,8 @@ export async function extractPageObjects(
   const viewport = page.getViewport({ scale: 1.0 });
   const pageWidth = viewport.width;
   const pageHeight = viewport.height;
+  const originX = viewport.viewBox ? viewport.viewBox[0] : 0;
+  const originY = viewport.viewBox ? viewport.viewBox[1] : 0;
 
   const objects: PDFObject[] = [];
 
@@ -528,8 +530,8 @@ export async function extractPageObjects(
       let primaryFontName: string | undefined;
 
       for (const item of currentLine) {
-        const x = item.transform[4];
-        const y = item.transform[5];
+        const x = item.transform[4] - originX;
+        const y = item.transform[5] - originY;
         const fontSize =
           Math.hypot(item.transform[0], item.transform[1]) ||
           Math.hypot(item.transform[2], item.transform[3]) ||
@@ -664,8 +666,8 @@ export async function extractPageObjects(
         const height = Math.round(Math.hypot(c, d) * 10) / 10;
         const rawX = b < 0 || a < 0 ? Math.min(e, e + a) : e;
         const rawY = d < 0 || c < 0 ? Math.min(f, f + d) : f;
-        const x = Math.max(0, Math.round(rawX * 10) / 10);
-        const y = Math.max(0, Math.round(rawY * 10) / 10);
+        const x = Math.max(0, Math.round((rawX - originX) * 10) / 10);
+        const y = Math.max(0, Math.round((rawY - originY) * 10) / 10);
 
         if (width >= 8 && height >= 8) {
           // Detect if this image is a full-page background or scanned page layer
@@ -743,8 +745,8 @@ export async function extractPageObjects(
         let pMaxY = -Infinity;
 
         const transformPoint = (px: number, py: number) => {
-          const tx = currentMatrix[0] * px + currentMatrix[2] * py + currentMatrix[4];
-          const ty = currentMatrix[1] * px + currentMatrix[3] * py + currentMatrix[5];
+          const tx = currentMatrix[0] * px + currentMatrix[2] * py + currentMatrix[4] - originX;
+          const ty = currentMatrix[1] * px + currentMatrix[3] * py + currentMatrix[5] - originY;
           if (Number.isFinite(tx) && Number.isFinite(ty)) {
             pMinX = Math.min(pMinX, tx);
             pMinY = Math.min(pMinY, ty);
@@ -944,6 +946,8 @@ export async function extractPageObjects(
     rotation: 0,
     baseWidth: pageWidth,
     baseHeight: pageHeight,
+    viewBoxOriginX: originX,
+    viewBoxOriginY: originY,
   };
 
   return { objects, pageInfo };

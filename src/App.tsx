@@ -65,6 +65,7 @@ import { FindReplaceBar } from './components/FindReplaceBar';
 import { WatermarkModal } from './components/WatermarkModal';
 import { PageNumberModal, formatPageNumberString } from './components/PageNumberModal';
 import { HeaderFooterModal, resolveHeaderFooterTemplate } from './components/HeaderFooterModal';
+import { applyHeaderFooterToPdf } from './utils/headerFooter';
 import { InvertColorsModal } from './components/InvertColorsModal';
 import { NupLayoutModal } from './components/NupLayoutModal';
 import { generateNupPdf, NupConfig, NupProgressUpdate } from './utils/nupLayout';
@@ -172,6 +173,7 @@ export default function App() {
   // Editing state
   const [activeTool, setActiveTool] = useState<ToolMode>('select');
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
+  const [selectedObjectIds, setSelectedObjectIds] = useState<Set<string>>(new Set());
   const [editingTextObjectId, setEditingTextObjectId] = useState<string | null>(null);
   const [copiedObject, setCopiedObject] = useState<PDFObject | null>(null);
   const [matches, setMatches] = useState<ObjectMatch[]>([]);
@@ -268,6 +270,7 @@ export default function App() {
   const [isWatermarkModalOpen, setIsWatermarkModalOpen] = useState<boolean>(false);
   const [isPageNumberModalOpen, setIsPageNumberModalOpen] = useState<boolean>(false);
   const [isHeaderFooterModalOpen, setIsHeaderFooterModalOpen] = useState<boolean>(false);
+  const [hasAppliedHeaderFooter, setHasAppliedHeaderFooter] = useState<boolean>(false);
 
   // Invert PDF Colors Tool State
   const [isInvertColorsModalOpen, setIsInvertColorsModalOpen] = useState<boolean>(false);
@@ -525,6 +528,7 @@ export default function App() {
       Math.max(0, Math.min(restoredPages.length - 1, snap.activePageIndex))
     );
     setSelectedObjectId(null);
+    setSelectedObjectIds(new Set());
     setEditingTextObjectId(null);
     setMatches([]);
     setCheckedMatchIds(new Set());
@@ -1844,6 +1848,73 @@ export default function App() {
     ]
   );
 
+  // Update bounds for multiple selected objects simultaneously
+  const handleUpdateMultipleObjectsBounds = useCallback(
+    (
+      updates: {
+        objId: string;
+        bounds: { x: number; y: number; width: number; height: number };
+        updatedFontSize?: number;
+      }[],
+      pageIndex?: number,
+      commitHistory = false
+    ) => {
+      if (!updates || updates.length === 0) return;
+      const targetPage = pageIndex !== undefined ? pageIndex : activePageIndex;
+      const currentMods = { ...modifications };
+      const pageMods = currentMods[targetPage]
+        ? clonePageModifications(currentMods[targetPage])
+        : createEmptyPageMod();
+
+      const pageObjs = pageObjectsMap.get(targetPage) || [];
+      const promotedImages: PDFObject[] = [];
+
+      for (const update of updates) {
+        const pastedIdx = pageMods.pastedObjects.findIndex((o) => o.id === update.objId);
+        if (pastedIdx !== -1) {
+          const existing = pageMods.pastedObjects[pastedIdx];
+          pageMods.pastedObjects[pastedIdx] = {
+            ...existing,
+            bounds: { ...update.bounds },
+            fontSize: update.updatedFontSize !== undefined ? update.updatedFontSize : existing.fontSize,
+          };
+        } else {
+          const orig = pageObjs.find((o) => o.id === update.objId);
+          if (orig) {
+            if (!pageMods.removedObjectIds.includes(orig.id)) {
+              pageMods.removedObjectIds = [...pageMods.removedObjectIds, orig.id];
+            }
+            const movedObj: PDFObject = {
+              ...clonePDFObject(orig),
+              id: orig.id,
+              sourceObjectId: orig.id,
+              bounds: { ...update.bounds },
+              fontSize: update.updatedFontSize !== undefined ? update.updatedFontSize : orig.fontSize,
+              isNew: true,
+            };
+            pageMods.pastedObjects = [...pageMods.pastedObjects, movedObj];
+            if (orig.type === 'image') {
+              promotedImages.push(orig);
+            }
+          }
+        }
+      }
+
+      currentMods[targetPage] = pageMods;
+
+      if (commitHistory) {
+        pushHistory(currentMods);
+      } else {
+        setModifications(currentMods);
+      }
+
+      for (const img of promotedImages) {
+        upgradeOriginalImageHighRes(img, targetPage);
+      }
+    },
+    [modifications, activePageIndex, pageObjectsMap, pushHistory, upgradeOriginalImageHighRes]
+  );
+
   // Update text content or formatting on a text object (both inline on canvas and in ObjectInspector)
   const handleUpdateTextObject = useCallback(
     (
@@ -1966,7 +2037,23 @@ export default function App() {
     ]
   );
 
-  // Delete object
+  // Multi-object selection handler
+  const handleSelectObjects = useCallback((objs: PDFObject[]) => {
+    if (!objs || objs.length === 0) {
+      setSelectedObjectId(null);
+      setSelectedObjectIds(new Set());
+      setMatches([]);
+      setCheckedMatchIds(new Set());
+      setIsHighlightMatchesActive(false);
+      return;
+    }
+    const idSet = new Set(objs.map((o) => o.id));
+    setSelectedObjectIds(idSet);
+    setSelectedObjectId(objs[0].id);
+    setEditingTextObjectId(null);
+  }, []);
+
+  // Delete single object
   const handleDeleteObject = useCallback(
     (objId: string, pageIndex?: number) => {
       const targetPage = pageIndex !== undefined ? pageIndex : activePageIndex;
@@ -1988,6 +2075,41 @@ export default function App() {
       currentMods[targetPage] = pageMods;
       pushHistory(currentMods);
       setSelectedObjectId(null);
+      setSelectedObjectIds(new Set());
+      setEditingTextObjectId(null);
+      setMatches([]);
+      setCheckedMatchIds(new Set());
+      setIsHighlightMatchesActive(false);
+      setMatchedTargetObject(null);
+    },
+    [modifications, activePageIndex, pageObjectsMap, pushHistory]
+  );
+
+  // Delete multiple objects simultaneously
+  const handleDeleteObjects = useCallback(
+    (objIds: string[], pageIndex?: number) => {
+      if (!objIds || objIds.length === 0) return;
+      const targetPage = pageIndex !== undefined ? pageIndex : activePageIndex;
+      const currentMods = { ...modifications };
+      const pageMods = currentMods[targetPage]
+        ? clonePageModifications(currentMods[targetPage])
+        : createEmptyPageMod();
+
+      const idsSet = new Set(objIds);
+      pageMods.pastedObjects = pageMods.pastedObjects.filter((o) => !idsSet.has(o.id));
+
+      const pageObjs = pageObjectsMap.get(targetPage) || [];
+      for (const objId of objIds) {
+        const isOrigOnPage = pageObjs.some((o) => o.id === objId);
+        if (isOrigOnPage && !pageMods.removedObjectIds.includes(objId)) {
+          pageMods.removedObjectIds.push(objId);
+        }
+      }
+
+      currentMods[targetPage] = pageMods;
+      pushHistory(currentMods);
+      setSelectedObjectId(null);
+      setSelectedObjectIds(new Set());
       setEditingTextObjectId(null);
       setMatches([]);
       setCheckedMatchIds(new Set());
@@ -2906,140 +3028,83 @@ export default function App() {
   );
 
   // 5. Apply Header & Footer
+  // 5. Apply Header & Footer directly to the PDF document
   const handleApplyHeaderFooter = useCallback(
-    (config: HeaderFooterConfig) => {
-      const targetIndices =
-        config.scope === 'current' ? [activePageIndex] : pages.map((_, idx) => idx);
-      const currentMods = { ...modifications };
-      const uid = `${Date.now()}`;
-      const totalPagesCount = pages.length;
+    async (config: HeaderFooterConfig) => {
+      if (!pdfBytes || pdfBytes.length === 0) return;
 
-      for (const pIdx of targetIndices) {
-        const pageInfo = pages[pIdx];
-        if (!pageInfo) continue;
+      setIsProcessing(true);
+      setLoadingMessage('Applying Header & Footer to document...');
 
-        const pageMods = currentMods[pIdx]
-          ? clonePageModifications(currentMods[pIdx])
-          : createEmptyPageMod();
-
-        const withoutHeaderFooter = pageMods.pastedObjects.filter(
-          (o) => o.layerType !== 'header-footer'
+      try {
+        // Compile any current modifications (drawings, text edits, rotations, blank pages) first
+        const compiledBytes = await applyModificationsAndExport(
+          pdfBytes.slice(),
+          modifications,
+          allOriginalObjectsMap,
+          pages,
+          protectionConfig,
+          pdfDocProxy,
+          pageObjectsMap
         );
 
-        const marginX = config.marginX || 36;
-        const usableWidth = Math.max(120, pageInfo.width - marginX * 2);
-        const colW = Math.round(usableWidth / 3);
-        const boxH = Math.max(16, config.fontSize * 1.55);
-        const topY = Math.max(12, pageInfo.height - boxH - (config.marginTop || 22));
-        const bottomY = Math.max(8, config.marginBottom || 22);
+        // Apply headers & footers directly to the PDF document pages using the dedicated engine
+        const modifiedBytes = await applyHeaderFooterToPdf(
+          compiledBytes,
+          pages,
+          config,
+          activePageIndex,
+          filename
+        );
 
-        const specs: {
-          key: string;
-          rawText: string;
-          align: TextAlign;
-          bounds: PDFRect;
-        }[] = [
-          {
-            key: 'hl',
-            rawText: config.headerLeft,
-            align: 'left',
-            bounds: { x: marginX, y: topY, width: colW, height: boxH },
-          },
-          {
-            key: 'hc',
-            rawText: config.headerCenter,
-            align: 'center',
-            bounds: {
-              x: Math.round((pageInfo.width - colW) / 2),
-              y: topY,
-              width: colW,
-              height: boxH,
-            },
-          },
-          {
-            key: 'hr',
-            rawText: config.headerRight,
-            align: 'right',
-            bounds: {
-              x: Math.round(pageInfo.width - marginX - colW),
-              y: topY,
-              width: colW,
-              height: boxH,
-            },
-          },
-          {
-            key: 'fl',
-            rawText: config.footerLeft,
-            align: 'left',
-            bounds: { x: marginX, y: bottomY, width: colW, height: boxH },
-          },
-          {
-            key: 'fc',
-            rawText: config.footerCenter,
-            align: 'center',
-            bounds: {
-              x: Math.round((pageInfo.width - colW) / 2),
-              y: bottomY,
-              width: colW,
-              height: boxH,
-            },
-          },
-          {
-            key: 'fr',
-            rawText: config.footerRight,
-            align: 'right',
-            bounds: {
-              x: Math.round(pageInfo.width - marginX - colW),
-              y: bottomY,
-              width: colW,
-              height: boxH,
-            },
-          },
-        ];
+        setHasAppliedHeaderFooter(true);
 
-        const newObjects: PDFObject[] = [];
-        for (const spec of specs) {
-          const resolved = resolveHeaderFooterTemplate(
-            spec.rawText.trim(),
-            pIdx + 1,
-            totalPagesCount,
-            filename
-          );
-          if (!resolved) continue;
+        // Load modified PDF with headers & footers permanently applied into the editor
+        await loadPdfFromBytes(modifiedBytes, filename || 'Document.pdf');
 
-          newObjects.push({
-            id: `hf-${spec.key}-${uid}-${pIdx}`,
-            pageIndex: pIdx,
-            type: 'text',
-            bounds: spec.bounds,
-            text: resolved,
-            fontFamily: config.fontFamily,
-            fontSize: config.fontSize,
-            fontWeight: config.fontWeight,
-            fontStyle: 'normal',
-            underline: false,
-            textAlign: spec.align,
-            color: config.color,
-            rotation: 0,
-            opacity: 1,
-            layerType: 'header-footer',
-            isNew: true,
-            label: `${spec.key.startsWith('h') ? 'Header' : 'Footer'}: ${resolved}`,
-          });
-        }
-
-        pageMods.pastedObjects = [...withoutHeaderFooter, ...newObjects];
-        currentMods[pIdx] = pageMods;
+        triggerPageToast(
+          config.scope === 'all'
+            ? `Applied Header & Footer across all ${pages.length} pages`
+            : `Applied Header & Footer on Page ${activePageIndex + 1}`
+        );
+      } catch (err: unknown) {
+        setErrorToast(
+          err instanceof Error
+            ? `Failed to apply Header & Footer: ${err.message}`
+            : 'Failed to apply Header & Footer. Please try again.'
+        );
+      } finally {
+        setIsProcessing(false);
+        setLoadingMessage('');
       }
-
-      pushHistory(currentMods);
-      triggerPageToast(
-        config.scope === 'all'
-          ? `Applied Header & Footer across all ${targetIndices.length} pages`
-          : `Applied Header & Footer on Page ${activePageIndex + 1}`
-      );
     },
-    [activePageIndex, pages, modifications, filename, pushHistory, triggerPageToast]
+    [
+      pdfBytes,
+      modifications,
+      allOriginalObjectsMap,
+      pages,
+      protectionConfig,
+      pdfDocProxy,
+      pageObjectsMap,
+      activePageIndex,
+      filename,
+      loadPdfFromBytes,
+      triggerPageToast,
+    ]
+  );
+
+  const handleRemoveHeaderFooter = useCallback(
+    (scope: DocumentLayerScope) => {
+      if (historyIndex > 0) {
+        handleUndo();
+        setHasAppliedHeaderFooter(false);
+        triggerPageToast('Removed headers & footers');
+      } else {
+        removeLayerObjectsByScope('header-footer', scope, 'headers & footers');
+        setHasAppliedHeaderFooter(false);
+      }
+    },
+    [historyIndex, handleUndo, removeLayerObjectsByScope, triggerPageToast]
   );
 
   // ================= INVERT PDF COLORS WORKFLOW =================
@@ -3432,8 +3497,10 @@ export default function App() {
     setHistory([]);
     setHistoryIndex(0);
     setSelectedObjectId(null);
+    setSelectedObjectIds(new Set());
     setEditingTextObjectId(null);
     setMatches([]);
+    setHasAppliedHeaderFooter(false);
     setIsCloseConfirmOpen(false);
     fileHandleRef.current = null;
   }, []);
@@ -3482,6 +3549,7 @@ export default function App() {
       if (!isCmdOrCtrl && e.key.toLowerCase() === 'd') {
         setActiveTool('draw');
         setSelectedObjectId(null);
+        setSelectedObjectIds(new Set());
         setEditingTextObjectId(null);
       }
       if (!isCmdOrCtrl && e.key.toLowerCase() === 'c') {
@@ -3501,9 +3569,17 @@ export default function App() {
       }
 
       // Delete: Delete or Backspace
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedObjectId && !editingTextObjectId) {
+      if (
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        (selectedObjectId || selectedObjectIds.size > 0) &&
+        !editingTextObjectId
+      ) {
         e.preventDefault();
-        handleDeleteObject(selectedObjectId);
+        if (selectedObjectIds.size > 1) {
+          handleDeleteObjects(Array.from(selectedObjectIds));
+        } else if (selectedObjectId) {
+          handleDeleteObject(selectedObjectId);
+        }
       }
 
       // Undo: Ctrl+Z
@@ -3530,6 +3606,7 @@ export default function App() {
           setEditingTextObjectId(null);
         } else {
           setSelectedObjectId(null);
+          setSelectedObjectIds(new Set());
         }
         setIsSameObjectModalOpen(false);
         setIsAddBlankPageModalOpen(false);
@@ -3805,6 +3882,7 @@ export default function App() {
             activePageIndex={activePageIndex}
             onActivePageChange={setActivePageIndex}
             selectedObjectId={selectedObjectId}
+            selectedObjectIds={selectedObjectIds}
             editingTextObjectId={editingTextObjectId}
             onSetEditingTextObjectId={setEditingTextObjectId}
             matches={canvasHighlightedMatches}
@@ -3824,14 +3902,18 @@ export default function App() {
             onSelectObject={(obj) => {
               if (obj?.isFullPageBackground) return;
               setSelectedObjectId(obj?.id || null);
+              setSelectedObjectIds(new Set(obj ? [obj.id] : []));
               if (!obj || obj.id !== editingTextObjectId) {
                 setEditingTextObjectId(null);
               }
             }}
+            onSelectObjects={handleSelectObjects}
             onCopyObject={handleCopyObject}
             onCreateCroppedObject={handleCreateCroppedObject}
             onDeleteObject={handleDeleteObject}
+            onDeleteObjects={handleDeleteObjects}
             onUpdateObjectBounds={handleUpdateObjectBounds}
+            onUpdateMultipleObjectsBounds={handleUpdateMultipleObjectsBounds}
             onRotateObject={handleRotateObject}
             onUpdateTextObject={handleUpdateTextObject}
             onFindEverywhere={handleFindEverywhere}
@@ -4021,12 +4103,10 @@ export default function App() {
         filename={filename}
         currentPageNumber={activePageIndex + 1}
         totalPages={pages.length}
-        hasExistingHeaderFooter={hasExistingLayerType('header-footer')}
+        hasExistingHeaderFooter={hasAppliedHeaderFooter || hasExistingLayerType('header-footer')}
         onClose={() => setIsHeaderFooterModalOpen(false)}
         onApplyHeaderFooter={handleApplyHeaderFooter}
-        onRemoveHeaderFooter={(scope) =>
-          removeLayerObjectsByScope('header-footer', scope, 'headers & footers')
-        }
+        onRemoveHeaderFooter={handleRemoveHeaderFooter}
       />
 
       {/* Add Blank Page Modal */}

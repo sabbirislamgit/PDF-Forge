@@ -67,3 +67,42 @@ test('pointsToNormalizedRect handles dragging in any direction correctly', () =>
   assert.equal(rect.width, 200);
   assert.equal(rect.height, 250);
 });
+
+test('mapVisibleCropToPdfBox and mapPdfBoxToVisibleCrop roundtrip across 0, 90, 180, and 270 rotations and origins', async () => {
+  const { mapVisibleCropToPdfBox, mapPdfBoxToVisibleCrop } = await import(
+    './pdfCoordinates'
+  );
+
+  const baseW = 400;
+  const baseH = 600;
+  const origins = [
+    [0, 0],
+    [50, 75],
+    [-20, 30],
+  ];
+
+  for (const [ox, oy] of origins) {
+    for (const rot of [0, 90, 180, 270]) {
+      const visW = rot % 180 === 0 ? baseW : baseH;
+      const visH = rot % 180 === 0 ? baseH : baseW;
+
+      const visibleCrop = { x: 35, y: 45, width: 220, height: 280 };
+      const pdfBox = mapVisibleCropToPdfBox(visibleCrop, visW, visH, rot, ox, oy);
+
+      assert.equal(
+        pdfBox.width,
+        rot % 180 === 0 ? visibleCrop.width : visibleCrop.height
+      );
+      assert.equal(
+        pdfBox.height,
+        rot % 180 === 0 ? visibleCrop.height : visibleCrop.width
+      );
+
+      const restored = mapPdfBoxToVisibleCrop(pdfBox, baseW, baseH, rot, ox, oy);
+      assert.equal(restored.x, visibleCrop.x);
+      assert.equal(restored.y, visibleCrop.y);
+      assert.equal(restored.width, visibleCrop.width);
+      assert.equal(restored.height, visibleCrop.height);
+    }
+  }
+});

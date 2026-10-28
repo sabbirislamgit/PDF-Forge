@@ -63,13 +63,31 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
   const [thumbnailZoom, setThumbnailZoom] = useState<'sm' | 'md' | 'lg'>('md');
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Sync selection with activePageIndex when modal opens or activePageIndex updates after reorder
+  // Synchronous refs for 100% reliable HTML5 drag-and-drop operations
+  const draggedIdxRef = useRef<number | null>(null);
+  const selectedIndicesRef = useRef<Set<number>>(selectedIndices);
+  useEffect(() => {
+    selectedIndicesRef.current = selectedIndices;
+  }, [selectedIndices]);
+
+  // Sync selection with activePageIndex only on initial modal open or when selection is empty/invalid
+  const prevIsOpenRef = useRef(isOpen);
   useEffect(() => {
     if (isOpen) {
-      const validActive = Math.max(0, Math.min(pages.length - 1, activePageIndex));
-      setSelectedIndices(new Set([validActive]));
-      setLastSelectedIdx(validActive);
+      const isJustOpened = !prevIsOpenRef.current;
+      const isSelectionEmpty = selectedIndicesRef.current.size === 0;
+      const hasInvalidIndex = Array.from(selectedIndicesRef.current).some(
+        (i) => i < 0 || i >= pages.length
+      );
+      if (isJustOpened || isSelectionEmpty || hasInvalidIndex) {
+        const validActive = Math.max(0, Math.min(pages.length - 1, activePageIndex));
+        const newSet = new Set([validActive]);
+        setSelectedIndices(newSet);
+        selectedIndicesRef.current = newSet;
+        setLastSelectedIdx(validActive);
+      }
     }
+    prevIsOpenRef.current = isOpen;
   }, [isOpen, activePageIndex, pages.length]);
 
   if (!isOpen) return null;
@@ -88,6 +106,7 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
         newSet.add(i);
       }
       setSelectedIndices(newSet);
+      selectedIndicesRef.current = newSet;
     } else if (isCtrlOrCmd) {
       const newSet = new Set(selectedIndices);
       if (newSet.has(index)) {
@@ -98,9 +117,12 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
         newSet.add(index);
       }
       setSelectedIndices(newSet);
+      selectedIndicesRef.current = newSet;
       setLastSelectedIdx(index);
     } else {
-      setSelectedIndices(new Set([index]));
+      const newSet = new Set([index]);
+      setSelectedIndices(newSet);
+      selectedIndicesRef.current = newSet;
       setLastSelectedIdx(index);
       onSelectPage(index);
     }
@@ -109,28 +131,46 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
   // Select All / Clear Selection
   const handleSelectAll = () => {
     if (selectedIndices.size === pages.length) {
-      setSelectedIndices(new Set([activePageIndex]));
+      const fallback = new Set([activePageIndex]);
+      setSelectedIndices(fallback);
+      selectedIndicesRef.current = fallback;
     } else {
-      setSelectedIndices(new Set(pages.map((_, idx) => idx)));
+      const all = new Set(pages.map((_, idx) => idx));
+      setSelectedIndices(all);
+      selectedIndicesRef.current = all;
     }
   };
 
   // Drag and Drop Handling
   const handleDragStart = (e: React.DragEvent, index: number) => {
+    draggedIdxRef.current = index;
     setDraggedIdx(index);
+
     if (!selectedIndices.has(index)) {
-      setSelectedIndices(new Set([index]));
+      const single = new Set([index]);
+      setSelectedIndices(single);
+      selectedIndicesRef.current = single;
       setLastSelectedIdx(index);
     }
+
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', String(index));
+    try {
+      e.dataTransfer.setData('text/plain', String(index));
+      e.dataTransfer.setData('application/x-page-index', String(index));
+    } catch {
+      // In some environments setData might throw on custom types
+    }
   };
 
   const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (draggedIdx === null || draggedIdx === index) {
-      setDropTarget(null);
+
+    const activeFrom = draggedIdxRef.current ?? draggedIdx;
+    if (activeFrom === null || activeFrom === index) {
+      if (dropTarget !== null) {
+        setDropTarget(null);
+      }
       return;
     }
 
@@ -143,19 +183,33 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
     }
   };
 
+  const handleDragLeave = (e: React.DragEvent, index: number) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    // Only reset dropTarget if the pointer is leaving this specific card
+    setDropTarget((prev) => (prev?.index === index ? null : prev));
+  };
+
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
     e.stopPropagation();
 
-    const parsedTransfer = Number.parseInt(e.dataTransfer.getData('text/plain'), 10);
-    const fromIdx =
-      draggedIdx !== null
-        ? draggedIdx
-        : !Number.isNaN(parsedTransfer)
-        ? parsedTransfer
-        : null;
+    let fromIdx = draggedIdxRef.current ?? draggedIdx;
+    if (fromIdx === null) {
+      try {
+        const raw =
+          e.dataTransfer.getData('application/x-page-index') ||
+          e.dataTransfer.getData('text/plain');
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isNaN(parsed)) {
+          fromIdx = parsed;
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     if (fromIdx === null || fromIdx === targetIndex) {
+      draggedIdxRef.current = null;
       setDraggedIdx(null);
       setDropTarget(null);
       return;
@@ -167,14 +221,30 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
         ? dropTarget.position === 'after'
         : e.clientX > rect.left + rect.width / 2;
 
-    const selectedList = selectedIndices.has(fromIdx)
-      ? Array.from(selectedIndices).sort((a, b) => a - b)
+    const currentSelected = selectedIndicesRef.current || selectedIndices;
+    const selectedList = currentSelected.has(fromIdx)
+      ? Array.from(currentSelected).sort((a, b) => a - b)
       : [fromIdx];
 
     if (onReorderPagesBatch && selectedList.length > 1) {
       let destination = isAfter ? targetIndex + 1 : targetIndex;
       destination = Math.max(0, Math.min(pages.length, destination));
+
+      const itemsBeforeTarget = selectedList.filter((idx) => idx < destination).length;
+      const adjustedTarget = Math.max(
+        0,
+        Math.min(pages.length - selectedList.length, destination - itemsBeforeTarget)
+      );
+
       onReorderPagesBatch(selectedList, destination);
+
+      const nextSelection = new Set<number>();
+      for (let i = 0; i < selectedList.length; i++) {
+        nextSelection.add(adjustedTarget + i);
+      }
+      setSelectedIndices(nextSelection);
+      selectedIndicesRef.current = nextSelection;
+      setLastSelectedIdx(adjustedTarget);
     } else {
       let dest = targetIndex;
       if (isAfter) {
@@ -189,11 +259,20 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
       dest = Math.max(0, Math.min(pages.length - 1, dest));
       if (dest !== fromIdx) {
         onReorderPages(fromIdx, dest);
-        setSelectedIndices(new Set([dest]));
+        const nextSelection = new Set([dest]);
+        setSelectedIndices(nextSelection);
+        selectedIndicesRef.current = nextSelection;
         setLastSelectedIdx(dest);
       }
     }
 
+    draggedIdxRef.current = null;
+    setDraggedIdx(null);
+    setDropTarget(null);
+  };
+
+  const handleDragEnd = () => {
+    draggedIdxRef.current = null;
     setDraggedIdx(null);
     setDropTarget(null);
   };
@@ -458,15 +537,9 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
                 draggable
                 onDragStart={(e) => handleDragStart(e, idx)}
                 onDragOver={(e) => handleDragOver(e, idx)}
-                onDragLeave={(e) => {
-                  if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-                  setDropTarget(null);
-                }}
+                onDragLeave={(e) => handleDragLeave(e, idx)}
                 onDrop={(e) => handleDrop(e, idx)}
-                onDragEnd={() => {
-                  setDraggedIdx(null);
-                  setDropTarget(null);
-                }}
+                onDragEnd={handleDragEnd}
                 onClick={(e) => handleCardClick(e, idx)}
                 className={`group relative rounded-xl p-3 border transition flex flex-col items-center cursor-grab active:cursor-grabbing select-none ${
                   isDragging
@@ -484,134 +557,138 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
                   <div className="absolute -right-2.5 top-2 bottom-2 w-1.5 rounded-full bg-blue-500 shadow-lg shadow-blue-500/80 z-30 pointer-events-none" />
                 )}
 
-                {/* Top Card Bar */}
-                <div className="w-full flex items-center justify-between mb-2 text-xs text-neutral-400">
-                  <div className="flex items-center space-x-1.5">
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => {}}
-                      className="rounded border-[#444] text-blue-600 focus:ring-0 cursor-pointer w-3.5 h-3.5"
+                {/* Inner Card Content: ignore pointer events on children during dragging so dragover/drop always hits card */}
+                <div className={`w-full flex flex-col items-center ${draggedIdx !== null ? 'pointer-events-none' : ''}`}>
+                  {/* Top Card Bar */}
+                  <div className="w-full flex items-center justify-between mb-2 text-xs text-neutral-400">
+                    <div className="flex items-center space-x-1.5">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => {}}
+                        className="rounded border-[#444] text-blue-600 focus:ring-0 cursor-pointer w-3.5 h-3.5"
+                      />
+                      <span className="font-semibold text-neutral-200 tabular-nums">
+                        Page {idx + 1}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center space-x-1 opacity-80 group-hover:opacity-100">
+                      {page.rotation && page.rotation % 360 !== 0 ? (
+                        <span className="text-[10px] text-amber-400 font-mono">
+                          {page.rotation}°
+                        </span>
+                      ) : null}
+                      {isCurrent && (
+                        <span className="text-[10px] text-blue-400 font-medium">
+                          Active
+                        </span>
+                      )}
+                      <GripVertical className="w-3.5 h-3.5 text-neutral-500 group-hover:text-neutral-300" />
+                    </div>
+                  </div>
+
+                  {/* Live PDF Thumbnail Preview Box */}
+                  <div className="w-full rounded-lg overflow-hidden relative">
+                    <PageThumbnailPreview
+                      key={`organizer-thumb-${page.id || idx}-${page.originalPageIndex ?? idx}-${idx}`}
+                      pdfDocProxy={pdfDocProxy}
+                      page={page}
+                      pageObjects={pageObjects}
+                      pageMods={pageMods}
+                      scrollRootRef={scrollContainerRef}
                     />
-                    <span className="font-semibold text-neutral-200 tabular-nums">
-                      Page {idx + 1}
-                    </span>
+
+                    {/* Quick Individual Card Actions Overlay */}
+                    <div
+                      className="absolute inset-x-0 bottom-0 p-1.5 bg-gradient-to-t from-black/85 via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-around text-white"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        disabled={idx <= 0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (idx > 0) {
+                            onReorderPages(idx, idx - 1);
+                            setSelectedIndices(new Set([idx - 1]));
+                          }
+                        }}
+                        title="Move Page Left"
+                        className="p-1 hover:bg-white/20 rounded transition cursor-pointer disabled:opacity-30"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRotatePages('ccw', [idx]);
+                        }}
+                        title="Rotate 90° Left"
+                        className="p-1 hover:bg-white/20 rounded transition cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRotatePages('cw', [idx]);
+                        }}
+                        title="Rotate 90° Right"
+                        className="p-1 hover:bg-white/20 rounded transition cursor-pointer"
+                      >
+                        <RotateCw className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDuplicatePages([idx]);
+                        }}
+                        title="Duplicate this page"
+                        className="p-1 hover:bg-white/20 rounded transition cursor-pointer"
+                      >
+                        <CopyPlus className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={pages.length <= 1}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (pages.length > 1) {
+                            onDeletePages([idx]);
+                          }
+                        }}
+                        title={pages.length <= 1 ? 'Cannot delete only page' : 'Delete this page'}
+                        className="p-1 hover:bg-rose-500/80 rounded transition cursor-pointer disabled:opacity-30"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx >= pages.length - 1}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (idx < pages.length - 1) {
+                            onReorderPages(idx, idx + 1);
+                            setSelectedIndices(new Set([idx + 1]));
+                          }
+                        }}
+                        title="Move Page Right"
+                        className="p-1 hover:bg-white/20 rounded transition cursor-pointer disabled:opacity-30"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="flex items-center space-x-1 opacity-80 group-hover:opacity-100">
-                    {page.rotation && page.rotation % 360 !== 0 ? (
-                      <span className="text-[10px] text-amber-400 font-mono">
-                        {page.rotation}°
-                      </span>
-                    ) : null}
-                    {isCurrent && (
-                      <span className="text-[10px] text-blue-400 font-medium">
-                        Active
-                      </span>
-                    )}
-                    <GripVertical className="w-3.5 h-3.5 text-neutral-500 group-hover:text-neutral-300" />
+                  {/* Footer Page Dimensions & Details */}
+                  <div className="w-full mt-2 flex items-center justify-between text-[10.5px] text-neutral-400 font-mono tabular-nums">
+                    <span>{Math.round(page.width)}×{Math.round(page.height)} pt</span>
+                    <span>{page.isBlankPage ? 'Blank' : `Src #${(page.originalPageIndex ?? idx) + 1}`}</span>
                   </div>
-                </div>
-
-                {/* Live PDF Thumbnail Preview Box */}
-                <div className="w-full rounded-lg overflow-hidden relative">
-                  <PageThumbnailPreview
-                    pdfDocProxy={pdfDocProxy}
-                    page={page}
-                    pageObjects={pageObjects}
-                    pageMods={pageMods}
-                    scrollRootRef={scrollContainerRef}
-                  />
-
-                  {/* Quick Individual Card Actions Overlay */}
-                  <div
-                    className="absolute inset-x-0 bottom-0 p-1.5 bg-gradient-to-t from-black/85 via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-around text-white"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      type="button"
-                      disabled={idx <= 0}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (idx > 0) {
-                          onReorderPages(idx, idx - 1);
-                          setSelectedIndices(new Set([idx - 1]));
-                        }
-                      }}
-                      title="Move Page Left"
-                      className="p-1 hover:bg-white/20 rounded transition cursor-pointer disabled:opacity-30"
-                    >
-                      <ChevronLeft className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRotatePages('ccw', [idx]);
-                      }}
-                      title="Rotate 90° Left"
-                      className="p-1 hover:bg-white/20 rounded transition cursor-pointer"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRotatePages('cw', [idx]);
-                      }}
-                      title="Rotate 90° Right"
-                      className="p-1 hover:bg-white/20 rounded transition cursor-pointer"
-                    >
-                      <RotateCw className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDuplicatePages([idx]);
-                      }}
-                      title="Duplicate this page"
-                      className="p-1 hover:bg-white/20 rounded transition cursor-pointer"
-                    >
-                      <CopyPlus className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={pages.length <= 1}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (pages.length > 1) {
-                          onDeletePages([idx]);
-                        }
-                      }}
-                      title={pages.length <= 1 ? 'Cannot delete only page' : 'Delete this page'}
-                      className="p-1 hover:bg-rose-500/80 rounded transition cursor-pointer disabled:opacity-30"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={idx >= pages.length - 1}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (idx < pages.length - 1) {
-                          onReorderPages(idx, idx + 1);
-                          setSelectedIndices(new Set([idx + 1]));
-                        }
-                      }}
-                      title="Move Page Right"
-                      className="p-1 hover:bg-white/20 rounded transition cursor-pointer disabled:opacity-30"
-                    >
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Footer Page Dimensions & Details */}
-                <div className="w-full mt-2 flex items-center justify-between text-[10.5px] text-neutral-400 font-mono tabular-nums">
-                  <span>{Math.round(page.width)}×{Math.round(page.height)} pt</span>
-                  <span>{page.isBlankPage ? 'Blank' : `Src #${(page.originalPageIndex ?? idx) + 1}`}</span>
                 </div>
               </div>
             );

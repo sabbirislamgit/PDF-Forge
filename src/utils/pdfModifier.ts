@@ -1,4 +1,15 @@
-import { PDFDocument, PDFFont, PDFImage, PDFPage, rgb, StandardFonts, degrees } from 'pdf-lib';
+import {
+  PDFDocument,
+  PDFFont,
+  PDFImage,
+  PDFPage,
+  rgb,
+  StandardFonts,
+  degrees,
+  PDFName,
+  decodePDFRawStream,
+  PDFStream,
+} from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
 import {
   DocumentModifications,
@@ -84,6 +95,26 @@ function unrotateRectToBaseSpace(
     h = nextH;
   }
   return r;
+}
+
+/**
+ * Maps a single PDF point from a rotated page's coordinate space back to the unrotated base page space.
+ */
+function unrotatePointToBaseSpace(
+  pt: { x: number; y: number },
+  currentWidth: number,
+  currentHeight: number,
+  rotationDegrees: number
+): { x: number; y: number } {
+  const normalized = ((rotationDegrees % 360) + 360) % 360;
+  if (normalized === 0) return { x: pt.x, y: pt.y };
+  const r = unrotateRectToBaseSpace(
+    { x: pt.x, y: pt.y, width: 0, height: 0 },
+    currentWidth,
+    currentHeight,
+    rotationDegrees
+  );
+  return { x: r.x, y: r.y };
 }
 
 /**
@@ -334,10 +365,10 @@ async function renderRichTextToHighResPng(
   }
 
   const totalTextHeight = lines.length * lineHeightPx;
-  const startY =
-    lines.length === 1
-      ? Math.max(0, (boxH - fontSize * 1.15) / 2)
-      : Math.max(0, Math.min(2, (boxH - totalTextHeight) / 2));
+  const isCentered = !opts.text.includes('\n');
+  const startY = isCentered
+    ? Math.max(0, (boxH - totalTextHeight) / 2)
+    : 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -390,7 +421,7 @@ function drawFormattedTextBox(
   const fontSize = opts.fontSize || 12;
   const bounds = opts.bounds;
   const textAlign = opts.textAlign || 'left';
-  const lineHeightMultiplier = opts.lineHeight || 1.22;
+  const lineHeightMultiplier = opts.lineHeight || 1.25;
   const letterSpacing = opts.letterSpacing || 0;
   const color = parseHexColorToRgb(opts.color, { r: 0.07, g: 0.09, b: 0.15 });
   const safeOpacity = Math.max(0.02, Math.min(1, opts.opacity ?? 1));
@@ -413,6 +444,19 @@ function drawFormattedTextBox(
     };
   };
 
+  // In HTML/CSS preview:
+  // Single-line text (no '\n') uses flex alignItems: 'center'
+  // Multi-line text (contains '\n') uses flex alignItems: 'flex-start'
+  const isCenteredVertically = !opts.text.includes('\n');
+  const totalTextHeight = lines.length * lineHeight;
+  const offsetTop = isCenteredVertically
+    ? Math.max(0, (bounds.height - totalTextHeight) / 2)
+    : 0;
+
+  // Typographic baseline distance from top of line box
+  const firstLineBaselineOffset = (lineHeight - fontSize) / 2 + fontSize * 0.78;
+  const line0_y = bounds.y + bounds.height - (offsetTop + firstLineBaselineOffset);
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
@@ -433,25 +477,21 @@ function drawFormattedTextBox(
       x = bounds.x + Math.max(0, bounds.width - lineWidth);
     }
 
-    let y: number;
-    if (lines.length === 1) {
-      y = bounds.y + Math.max(fontSize * 0.18, (bounds.height - fontSize * 0.78) / 2);
-    } else {
-      y = bounds.y + bounds.height - fontSize * 0.88 - i * lineHeight;
-    }
+    const y = line0_y - i * lineHeight;
+    if (y < bounds.y - fontSize && i > 0) break;
 
-    if (y < bounds.y - fontSize * 0.5 && i > 0) break;
-
-    if (letterSpacing && Math.abs(letterSpacing) > 0.05 && !normRot) {
+    if (letterSpacing && Math.abs(letterSpacing) > 0.05) {
       let cursorX = x;
       for (const ch of line) {
+        const pt = transformPoint(cursorX, y);
         page.drawText(ch, {
-          x: cursorX,
-          y,
+          x: pt.x,
+          y: pt.y,
           size: fontSize,
           font,
           color,
           opacity: safeOpacity,
+          rotate: normRot ? degrees(pdfAngle) : undefined,
         });
         let chW = fontSize * 0.5;
         try {
@@ -500,7 +540,8 @@ export async function applyModificationsAndExport(
   allDocumentObjects: Map<string, PDFObject>,
   pages?: PageInfo[],
   protectionConfig?: PDFProtectionConfig,
-  pdfDocProxy?: pdfjsLib.PDFDocumentProxy | null
+  pdfDocProxy?: pdfjsLib.PDFDocumentProxy | null,
+  pageObjectsMap?: Map<number, PDFObject[]>
 ): Promise<Uint8Array> {
   const srcPdfDoc = await PDFDocument.load(originalPdfBytes, { ignoreEncryption: true });
   const srcPageCount = srcPdfDoc.getPageCount();
@@ -870,7 +911,7 @@ export async function applyModificationsAndExport(
           });
         }
 
-      if (pasted.type === 'image' && pasted.imageDataUrl) {
+      if ((pasted.type === 'image' || pasted.type === 'vector') && pasted.imageDataUrl) {
         try {
           const img = await getOrEmbedImage(pasted.imageDataUrl);
           drawImageWithCenterRotation(
@@ -919,7 +960,8 @@ export async function applyModificationsAndExport(
             borderColor: annotRgb,
             borderWidth: annot.strokeWidth || 2,
             color: annot.fillColor ? parseHexColorToRgb(annot.fillColor) : undefined,
-            opacity,
+            opacity: annot.fillColor ? opacity : undefined,
+            borderOpacity: opacity,
           });
         } else if (annot.type === 'circle') {
           page.drawEllipse({
@@ -930,7 +972,8 @@ export async function applyModificationsAndExport(
             borderColor: annotRgb,
             borderWidth: annot.strokeWidth || 2,
             color: annot.fillColor ? parseHexColorToRgb(annot.fillColor) : undefined,
-            opacity,
+            opacity: annot.fillColor ? opacity : undefined,
+            borderOpacity: opacity,
           });
         } else if (annot.type === 'highlight') {
           page.drawRectangle({
@@ -942,11 +985,12 @@ export async function applyModificationsAndExport(
             opacity: annot.opacity ?? 0.35,
           });
         } else if (annot.type === 'underline') {
+          const thickness = annot.strokeWidth || 2;
           page.drawLine({
-            start: { x: bounds.x, y: bounds.y },
-            end: { x: bounds.x + bounds.width, y: bounds.y },
+            start: { x: bounds.x, y: bounds.y + thickness / 2 },
+            end: { x: bounds.x + bounds.width, y: bounds.y + thickness / 2 },
             color: annotRgb,
-            thickness: annot.strokeWidth || 2,
+            thickness,
             opacity,
           });
         } else if (annot.type === 'strikeout') {
@@ -958,10 +1002,21 @@ export async function applyModificationsAndExport(
             opacity,
           });
         } else if (annot.type === 'arrow') {
-          const x1 = bounds.x;
-          const y1 = bounds.y;
-          const x2 = bounds.x + bounds.width;
-          const y2 = bounds.y + bounds.height;
+          let startPt = { x: bounds.x, y: bounds.y + bounds.height };
+          let endPt = { x: bounds.x + bounds.width, y: bounds.y };
+
+          if (annot.points && annot.points.length >= 2) {
+            const rawP1 = annot.points[0];
+            const rawP2 = annot.points[1];
+            startPt = unrotatePointToBaseSpace(rawP1, curViewW, curViewH, appliedRotation);
+            endPt = unrotatePointToBaseSpace(rawP2, curViewW, curViewH, appliedRotation);
+          }
+
+          const x1 = startPt.x;
+          const y1 = startPt.y;
+          const x2 = endPt.x;
+          const y2 = endPt.y;
+
           page.drawLine({
             start: { x: x1, y: y1 },
             end: { x: x2, y: y2 },
@@ -969,8 +1024,9 @@ export async function applyModificationsAndExport(
             thickness: annot.strokeWidth || 2,
             opacity,
           });
+
           const angle = Math.atan2(y2 - y1, x2 - x1);
-          const arrowLen = 10;
+          const arrowLen = Math.max(8, (annot.strokeWidth || 2) * 3.5);
           page.drawLine({
             start: { x: x2, y: y2 },
             end: {
@@ -992,9 +1048,12 @@ export async function applyModificationsAndExport(
             opacity,
           });
         } else if (annot.type === 'pencil' && annot.points && annot.points.length > 1) {
-          for (let pi = 0; pi < annot.points.length - 1; pi++) {
-            const p1 = annot.points[pi];
-            const p2 = annot.points[pi + 1];
+          const mappedPoints = annot.points.map((pt) =>
+            unrotatePointToBaseSpace(pt, curViewW, curViewH, appliedRotation)
+          );
+          for (let pi = 0; pi < mappedPoints.length - 1; pi++) {
+            const p1 = mappedPoints[pi];
+            const p2 = mappedPoints[pi + 1];
             page.drawLine({
               start: { x: p1.x, y: p1.y },
               end: { x: p2.x, y: p2.y },
@@ -1007,23 +1066,25 @@ export async function applyModificationsAndExport(
           await renderTextObjectOntoPage(page, {
             text: annot.text,
             bounds,
-            fontSize: 12,
-            color: annot.color,
+            fontFamily: annot.fontFamily,
+            fontSize: annot.fontSize || 13,
+            fontWeight: annot.fontWeight || 'normal',
+            color: annot.color || '#111827',
             opacity,
           });
         } else if (annot.type === 'note') {
-          page.drawRectangle({
-            x: bounds.x,
-            y: bounds.y,
-            width: 22,
-            height: 22,
+          page.drawEllipse({
+            x: bounds.x + 11,
+            y: bounds.y + 11,
+            xScale: 11,
+            yScale: 11,
             color: annotRgb,
             opacity: 0.95,
           });
           if (annot.text) {
             await renderTextObjectOntoPage(page, {
               text: annot.text,
-              bounds: { x: bounds.x + 26, y: bounds.y, width: 200, height: 36 },
+              bounds: { x: bounds.x + 26, y: bounds.y - 4, width: 200, height: 32 },
               fontSize: 8.5,
               color: '#333333',
               opacity: 0.95,
@@ -1042,11 +1103,135 @@ export async function applyModificationsAndExport(
     }
   }
 
+  // Embed full PDF Forge Editor State and base document bytes for 100% lossless re-editing upon reopening
+  try {
+    let cleanOriginalBytes = originalPdfBytes;
+    try {
+      const checkDoc = await PDFDocument.load(originalPdfBytes, { ignoreEncryption: true });
+      const existingBaseRef = checkDoc.catalog.get(PDFName.of('PDFForgeBaseBytes'));
+      if (existingBaseRef) {
+        const existingBaseObj = checkDoc.context.lookup(existingBaseRef);
+        if (existingBaseObj instanceof PDFStream) {
+          const decoded = decodePDFRawStream(existingBaseObj as any);
+          const unwrapped = decoded.decode();
+          if (unwrapped && unwrapped.length > 0) {
+            cleanOriginalBytes = unwrapped;
+          }
+        }
+      }
+    } catch {
+      // Use originalPdfBytes as clean base
+    }
+
+    const cleanPages = pages
+      ? pages.map((p) => ({
+          ...p,
+          thumbnailDataUrl: undefined,
+        }))
+      : undefined;
+
+    const statePayload = {
+      version: 1,
+      app: 'pdf-forge',
+      timestamp: Date.now(),
+      pages: cleanPages,
+      pageObjectsEntries: pageObjectsMap ? Array.from(pageObjectsMap.entries()) : [],
+      modifications: modifications,
+    };
+
+    const jsonStr = JSON.stringify(statePayload);
+    const stateStream = targetPdfDoc.context.flateStream(jsonStr);
+    const stateRef = targetPdfDoc.context.register(stateStream);
+    targetPdfDoc.catalog.set(PDFName.of('PDFForgeState'), stateRef);
+
+    const baseStream = targetPdfDoc.context.flateStream(cleanOriginalBytes);
+    const baseRef = targetPdfDoc.context.register(baseStream);
+    targetPdfDoc.catalog.set(PDFName.of('PDFForgeBaseBytes'), baseRef);
+  } catch {
+    // Gracefully ignore state embedding errors in constrained environments
+  }
+
   const rawSavedBytes = await targetPdfDoc.save();
   if (protectionConfig && protectionConfig.enabled) {
     return await applyPdfEncryption(rawSavedBytes, protectionConfig);
   }
   return rawSavedBytes;
+}
+
+export interface PDFForgeRestoredState {
+  isPDFForgeDoc: boolean;
+  baseBytes?: Uint8Array;
+  pages: PageInfo[];
+  pageObjectsMap: Map<number, PDFObject[]>;
+  modifications: DocumentModifications;
+}
+
+/**
+ * Inspects a PDF binary to detect and restore embedded PDF Forge editable object state.
+ * When found, returns the baseline document bytes and exact editable object tree,
+ * preserving all text objects, shapes, annotations, positions, fonts, colors, rotation,
+ * transparency, and page structure.
+ */
+export async function extractPDFForgeState(
+  pdfBytes: Uint8Array
+): Promise<PDFForgeRestoredState | null> {
+  try {
+    const loadedDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    const stateRef = loadedDoc.catalog.get(PDFName.of('PDFForgeState'));
+    if (!stateRef) {
+      return null;
+    }
+
+    const stateStreamObj = loadedDoc.context.lookup(stateRef);
+    if (!stateStreamObj || !(stateStreamObj instanceof PDFStream)) {
+      return null;
+    }
+
+    let stateJson = '';
+    try {
+      const decoded = decodePDFRawStream(stateStreamObj as any);
+      stateJson = new TextDecoder().decode(decoded.decode());
+    } catch {
+      stateJson = new TextDecoder().decode(stateStreamObj.getContents());
+    }
+
+    if (!stateJson) return null;
+    const parsedState = JSON.parse(stateJson);
+    if (!parsedState || parsedState.app !== 'pdf-forge') {
+      return null;
+    }
+
+    let restoredBaseBytes: Uint8Array | undefined;
+    const baseBytesRef = loadedDoc.catalog.get(PDFName.of('PDFForgeBaseBytes'));
+    if (baseBytesRef) {
+      try {
+        const baseStreamObj = loadedDoc.context.lookup(baseBytesRef);
+        if (baseStreamObj instanceof PDFStream) {
+          const decodedBase = decodePDFRawStream(baseStreamObj as any);
+          restoredBaseBytes = decodedBase.decode();
+        }
+      } catch {
+        // Fall back to original bytes if base stream decoding fails
+      }
+    }
+
+    const pageObjectsMap = new Map<number, PDFObject[]>();
+    if (Array.isArray(parsedState.pageObjectsEntries)) {
+      for (const [pIdx, objs] of parsedState.pageObjectsEntries) {
+        pageObjectsMap.set(Number(pIdx), objs);
+      }
+    }
+
+    return {
+      isPDFForgeDoc: true,
+      baseBytes: restoredBaseBytes,
+      pages: parsedState.pages || [],
+      pageObjectsMap,
+      modifications: parsedState.modifications || {},
+    };
+  } catch {
+    return null;
+  }
 }
 
 

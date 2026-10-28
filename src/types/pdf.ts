@@ -208,6 +208,9 @@ export interface AnnotationItem {
   opacity?: number;
   fillColor?: string;
   text?: string;
+  fontSize?: number;
+  fontFamily?: string;
+  fontWeight?: FontWeight;
   author?: string;
   createdAt: number;
   points?: { x: number; y: number }[]; // For freehand pencil or arrow endpoints

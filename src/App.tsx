@@ -35,6 +35,7 @@ import { findMatchingObjects } from './utils/objectMatching';
 import {
   applyModificationsAndExport,
   savePdfToDestination,
+  extractPDFForgeState,
 } from './utils/pdfModifier';
 import {
   isPageLikelyScanned,
@@ -1173,6 +1174,99 @@ export default function App() {
         } catch {
           // ignore
         }
+      }
+
+      // 1. Check if the PDF has embedded PDF Forge state for lossless round-trip re-editing
+      const restoredState = await extractPDFForgeState(bytes);
+      if (restoredState && restoredState.isPDFForgeDoc) {
+        setLoadingMessage('Restoring editable PDF objects and document layers...');
+        const workingPdfBytes =
+          restoredState.baseBytes && restoredState.baseBytes.length > 0
+            ? restoredState.baseBytes
+            : bytes.slice();
+
+        const loadingTask = pdfjsLib.getDocument({
+          data: workingPdfBytes.slice(),
+          cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/',
+          cMapPacked: true,
+        });
+
+        const proxy = await loadingTask.promise;
+        setPdfBytes(workingPdfBytes);
+        setFilename(docName);
+        setPdfDocProxy(proxy);
+
+        // Ensure thumbnails are populated for all pages
+        const finalPages: PageInfo[] = [];
+        for (let i = 0; i < restoredState.pages.length; i++) {
+          const p = restoredState.pages[i];
+          let thumbUrl = p.thumbnailDataUrl;
+          if (!thumbUrl) {
+            if (p.isBlankPage) {
+              thumbUrl = createBlankPageThumbnail(p.width, p.height, p.backgroundColor || '#ffffff');
+            } else {
+              try {
+                const origNum =
+                  p.originalPageIndex !== null && p.originalPageIndex !== undefined
+                    ? p.originalPageIndex + 1
+                    : i + 1;
+                if (origNum <= proxy.numPages) {
+                  const pdfPage = await proxy.getPage(origNum);
+                  const targetThumbWidth = 320;
+                  const thumbScale = targetThumbWidth / Math.max(1, p.width);
+                  const thumbViewport = pdfPage.getViewport({ scale: thumbScale });
+                  const thumbCanvas = document.createElement('canvas');
+                  thumbCanvas.width = Math.max(1, Math.round(thumbViewport.width));
+                  thumbCanvas.height = Math.max(1, Math.round(thumbViewport.height));
+                  const ctx = thumbCanvas.getContext('2d', { alpha: false });
+                  if (ctx) {
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, thumbCanvas.width, thumbCanvas.height);
+                    await pdfPage.render({ canvasContext: ctx, viewport: thumbViewport, canvas: thumbCanvas }).promise;
+                    thumbUrl = thumbCanvas.toDataURL('image/png');
+                  }
+                  thumbCanvas.width = 0;
+                  thumbCanvas.height = 0;
+                }
+              } catch {
+                // Ignore thumbnail error
+              }
+            }
+          }
+          finalPages.push({ ...p, thumbnailDataUrl: thumbUrl });
+        }
+
+        const restoredMods = restoredState.modifications || {};
+        const restoredObjectsMap = restoredState.pageObjectsMap || new Map();
+        const initialSnapshot = createSnapshot(finalPages, restoredObjectsMap, restoredMods, 0);
+
+        setPages(finalPages);
+        setPageObjectsMap(restoredObjectsMap);
+        setActivePageIndex(0);
+        setSelectedObjectId(null);
+        setEditingTextObjectId(null);
+        setMatches([]);
+        setCheckedMatchIds(new Set());
+        setIsHighlightMatchesActive(false);
+        setIsSameObjectModalOpen(false);
+        setMatchedTargetObject(null);
+        setModifications(restoredMods);
+        setHistory([initialSnapshot]);
+        setHistoryIndex(0);
+
+        if (finalPages.length > 0) {
+          const isDesktop = window.innerWidth >= 1024;
+          const availWidth = isDesktop
+            ? window.innerWidth - (isSidebarOpen ? 208 : 0) - (isInspectorOpen ? 320 : 0)
+            : window.innerWidth;
+          const horizPadding = availWidth < 640 ? 20 : 48;
+          const optimal =
+            Math.round(((Math.max(200, availWidth) - horizPadding) / finalPages[0].width) * 100) / 100;
+          setZoom(Math.min(2.0, Math.max(0.3, optimal)));
+          setIsFitWidthActive(true);
+        }
+
+        return;
       }
 
       const clonedBytes = bytes.slice();
@@ -3061,7 +3155,8 @@ export default function App() {
           allOriginalObjectsMap,
           pages,
           protectionConfig,
-          pdfDocProxy
+          pdfDocProxy,
+          pageObjectsMap
         );
 
         const result = await generateNupPdf(
@@ -3122,6 +3217,7 @@ export default function App() {
       filename,
       triggerPageToast,
       loadPdfFromBytes,
+      pageObjectsMap,
     ]
   );
 
@@ -3152,7 +3248,8 @@ export default function App() {
           allOriginalObjectsMap,
           pages,
           protectionConfig,
-          pdfDocProxy
+          pdfDocProxy,
+          pageObjectsMap
         );
 
         const result = await batchCropPdfPages(
@@ -3208,6 +3305,7 @@ export default function App() {
       filename,
       triggerPageToast,
       loadPdfFromBytes,
+      pageObjectsMap,
     ]
   );
 
@@ -3229,7 +3327,8 @@ export default function App() {
         allOriginalObjectsMap,
         pages,
         protectionConfig,
-        pdfDocProxy
+        pdfDocProxy,
+        pageObjectsMap
       );
 
       // Preserve the original filename by default
@@ -3256,7 +3355,7 @@ export default function App() {
       setIsProcessing(false);
       setLoadingMessage('');
     }
-  }, [pdfBytes, modifications, allOriginalObjectsMap, pages, protectionConfig, pdfDocProxy, filename]);
+  }, [pdfBytes, modifications, allOriginalObjectsMap, pages, protectionConfig, pdfDocProxy, filename, pageObjectsMap]);
 
   // 2. Save As (Choose custom filename, choose destination folder via system dialog, optionally switch active session to new file)
   const handleConfirmSaveAs = useCallback(
@@ -3277,7 +3376,8 @@ export default function App() {
           allOriginalObjectsMap,
           pages,
           protectionConfig,
-          pdfDocProxy
+          pdfDocProxy,
+          pageObjectsMap
         );
 
         const saveResult = await savePdfToDestination(modifiedBytes, options.targetFilename, {
@@ -3316,6 +3416,7 @@ export default function App() {
       pages,
       protectionConfig,
       pdfDocProxy,
+      pageObjectsMap,
       triggerPageToast,
     ]
   );

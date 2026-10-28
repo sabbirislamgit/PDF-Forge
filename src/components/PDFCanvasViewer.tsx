@@ -634,7 +634,7 @@ const PageItemComponent: React.FC<PageItemProps> = ({
               />
             ) : (
               <div
-                className="w-full h-full flex items-center px-1 whitespace-pre-wrap break-words"
+                className="w-full h-full flex items-center whitespace-pre-wrap break-words"
                 style={{
                   fontSize: `${Math.max(8, (rep.fontSize || 12) * zoom)}px`,
                   fontFamily: getCssFontFamily(rep.fontFamily),

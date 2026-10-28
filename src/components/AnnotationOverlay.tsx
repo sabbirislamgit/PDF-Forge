@@ -335,10 +335,19 @@ export const AnnotationOverlay: React.FC<AnnotationOverlayProps> = ({
           }
 
           if (annot.type === 'arrow') {
-            const x1 = vp.x;
-            const y1 = vp.y;
-            const x2 = vp.x + vp.width;
-            const y2 = vp.y + vp.height;
+            let x1 = vp.x;
+            let y1 = vp.y;
+            let x2 = vp.x + vp.width;
+            let y2 = vp.y + vp.height;
+
+            if (annot.points && annot.points.length >= 2) {
+              const p1 = pdfToViewportRect({ x: annot.points[0].x, y: annot.points[0].y, width: 0, height: 0 }, pageInfo.height, zoom);
+              const p2 = pdfToViewportRect({ x: annot.points[1].x, y: annot.points[1].y, width: 0, height: 0 }, pageInfo.height, zoom);
+              x1 = p1.x;
+              y1 = p1.y;
+              x2 = p2.x;
+              y2 = p2.y;
+            }
 
             return (
               <g

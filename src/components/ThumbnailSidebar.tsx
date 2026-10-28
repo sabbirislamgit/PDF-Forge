@@ -528,6 +528,7 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
   const scrollRafRef = useRef<number | null>(null);
 
   const [draggedPageIdx, setDraggedPageIdx] = useState<number | null>(null);
+  const draggedPageIdxRef = useRef<number | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{
     index: number;
     position: 'before' | 'after';
@@ -653,16 +654,23 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
   );
 
   const handleDragStart = (e: React.DragEvent, pageIndex: number) => {
+    draggedPageIdxRef.current = pageIndex;
     setDraggedPageIdx(pageIndex);
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', String(pageIndex));
+    try {
+      e.dataTransfer.setData('text/plain', String(pageIndex));
+      e.dataTransfer.setData('application/x-page-index', String(pageIndex));
+    } catch {
+      // ignore
+    }
   };
 
   const handleDragOver = (e: React.DragEvent, pageIndex: number) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (draggedPageIdx === null || draggedPageIdx === pageIndex) {
-      setDropIndicator(null);
+    const activeFrom = draggedPageIdxRef.current ?? draggedPageIdx;
+    if (activeFrom === null || activeFrom === pageIndex) {
+      if (dropIndicator !== null) setDropIndicator(null);
       return;
     }
 
@@ -674,18 +682,33 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
     });
   };
 
+  const handleDragLeave = (e: React.DragEvent, pageIndex: number) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setDropIndicator((prev) => (prev?.index === pageIndex ? null : prev));
+  };
+
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
-    const fromIdx =
-      draggedPageIdx !== null
-        ? draggedPageIdx
-        : Number.parseInt(e.dataTransfer.getData('text/plain'), 10);
+    let fromIdx = draggedPageIdxRef.current ?? draggedPageIdx;
+    if (fromIdx === null) {
+      try {
+        const raw =
+          e.dataTransfer.getData('application/x-page-index') ||
+          e.dataTransfer.getData('text/plain');
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isNaN(parsed)) fromIdx = parsed;
+      } catch {
+        // ignore
+      }
+    }
 
     if (
+      fromIdx === null ||
       Number.isNaN(fromIdx) ||
       fromIdx === targetIndex ||
       !onReorderPages
     ) {
+      draggedPageIdxRef.current = null;
       setDraggedPageIdx(null);
       setDropIndicator(null);
       return;
@@ -714,6 +737,13 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
       onReorderPages(fromIdx, destination);
     }
 
+    draggedPageIdxRef.current = null;
+    setDraggedPageIdx(null);
+    setDropIndicator(null);
+  };
+
+  const handleDragEnd = () => {
+    draggedPageIdxRef.current = null;
     setDraggedPageIdx(null);
     setDropIndicator(null);
   };
@@ -843,15 +873,9 @@ const ThumbnailSidebarComponent: React.FC<ThumbnailSidebarProps> = ({
                 draggable={Boolean(onReorderPages)}
                 onDragStart={(e) => handleDragStart(e, page.pageIndex)}
                 onDragOver={(e) => handleDragOver(e, page.pageIndex)}
-                onDragLeave={(e) => {
-                  if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-                  setDropIndicator(null);
-                }}
+                onDragLeave={(e) => handleDragLeave(e, page.pageIndex)}
                 onDrop={(e) => handleDrop(e, page.pageIndex)}
-                onDragEnd={() => {
-                  setDraggedPageIdx(null);
-                  setDropIndicator(null);
-                }}
+                onDragEnd={handleDragEnd}
                 onClick={() => {
                   onSelectPage(page.pageIndex);
                   if (onClose && window.innerWidth < 1024) {

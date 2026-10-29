@@ -336,7 +336,7 @@ export const FontPicker: React.FC<FontPickerProps> = ({
             {curatedBengali.length > 0 && (
               <div className="py-1">
                 <div className="px-3 py-1 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
-                  Bangla Fonts (বাংলা)
+                  Bengali Fonts
                 </div>
                 {curatedBengali.map((f) => (
                   <FontRow

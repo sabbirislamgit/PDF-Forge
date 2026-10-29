@@ -904,7 +904,7 @@ export async function applyModificationsAndExport(
       }
     }
 
-    // 3. Process PASTED / MOVED / EDITED / OCR / WATERMARK / PAGE NUMBER / HEADER-FOOTER OBJECTS
+    // 3. Process PASTED / MOVED / EDITED / OCR / WATERMARK / PAGE NUMBER OBJECTS
     if (pageMods.pastedObjects && pageMods.pastedObjects.length > 0) {
       for (const pasted of pageMods.pastedObjects) {
         const bounds = unrotateRectToBaseSpace(pasted.bounds, curViewW, curViewH, appliedRotation);

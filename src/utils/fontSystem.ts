@@ -1,3 +1,5 @@
+import { permissionManager, isTauriEnvironment } from './permissionManager';
+
 export interface FontItem {
   name: string;
   family: string;
@@ -235,14 +237,48 @@ export async function removeCustomFont(name: string): Promise<void> {
 let detectedSystemFontsCache: FontItem[] | null = null;
 
 /**
- * Detects installed local system fonts via the Window.queryLocalFonts API where supported.
+ * Detects installed local system fonts via native Tauri Rust APIs (preferred in desktop app)
+ * or via Window.queryLocalFonts with the PDF Forge Permission Manager (in web environments).
  */
 export async function detectSystemFonts(): Promise<FontItem[]> {
-  if (detectedSystemFontsCache) return detectedSystemFontsCache;
+  if (detectedSystemFontsCache && detectedSystemFontsCache.length > 0) {
+    return detectedSystemFontsCache;
+  }
   const detected: FontItem[] = [];
 
+  // 1. In Tauri Desktop App, prefer native Rust API (scans OS font database directly without browser prompt)
+  if (isTauriEnvironment()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const nativeFonts: string[] = await invoke('get_system_fonts');
+      if (Array.isArray(nativeFonts) && nativeFonts.length > 0) {
+        const seen = new Set<string>();
+        for (const fam of nativeFonts) {
+          if (!fam || seen.has(fam.toLowerCase())) continue;
+          seen.add(fam.toLowerCase());
+          detected.push({
+            name: fam,
+            family: fam,
+            category: 'system',
+          });
+        }
+        detectedSystemFontsCache = detected;
+        return detected;
+      }
+    } catch {
+      // If native invoke throws or is unavailable, fallback to browser APIs
+    }
+  }
+
+  // 2. Web / Browser environment: request permission via PDF Forge Permission Manager first
   if (typeof window !== 'undefined' && 'queryLocalFonts' in window) {
     try {
+      const isPermitted = await permissionManager.requestPermission('local-fonts');
+      if (!isPermitted) {
+        detectedSystemFontsCache = detected;
+        return detected;
+      }
+
       const localFonts = await (window as any).queryLocalFonts();
       const seen = new Set<string>();
       if (Array.isArray(localFonts)) {

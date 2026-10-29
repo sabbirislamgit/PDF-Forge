@@ -392,7 +392,7 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
                         true
                       );
                     }}
-                    placeholder="Enter English or বাংলা (Unicode) text..."
+                    placeholder="Enter text..."
                     style={{
                       fontFamily: getCssFontStack(selectedObject.fontFamily),
                     }}

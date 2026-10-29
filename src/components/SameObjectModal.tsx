@@ -502,7 +502,7 @@ export const SameObjectModal: React.FC<SameObjectModalProps> = ({
                 <div className="space-y-3">
                   <div>
                     <label className="text-[11px] font-semibold text-neutral-300 block mb-1">
-                      Replacement Text (Supports English &amp; বাংলা Unicode)
+                      Replacement Text (Supports Unicode &amp; Symbols)
                     </label>
                     <textarea
                       rows={2}

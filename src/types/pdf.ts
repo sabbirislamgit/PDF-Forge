@@ -35,7 +35,7 @@ export interface ObjectSignature {
   fontStyle?: FontStyle;
   color?: string;
   pdfObjectId?: string;
-  layerType?: 'watermark' | 'page-number' | 'header-footer' | 'ocr' | 'drawing' | 'added-text' | 'added-image';
+  layerType?: 'watermark' | 'page-number' | 'ocr' | 'drawing' | 'added-text' | 'added-image';
 }
 
 export interface PDFObject {
@@ -70,7 +70,7 @@ export interface PDFObject {
   // Attributes
   rotation?: number; // degrees (-180..360)
   opacity?: number; // 0..1 (default 1)
-  layerType?: 'watermark' | 'page-number' | 'header-footer' | 'ocr' | 'drawing' | 'added-text' | 'added-image';
+  layerType?: 'watermark' | 'page-number' | 'ocr' | 'drawing' | 'added-text' | 'added-image';
   forceBackgroundCover?: boolean; // when true on a new object (e.g. OCR), draws backgroundColor cover rect over underlying raster text
   isNew?: boolean; // newly pasted, moved, resized, or edited object
   sourceObjectId?: string; // ID of original PDF object if derived from one
@@ -133,23 +133,6 @@ export interface PageNumberConfig {
   fontWeight: FontWeight;
   color: string;
   margin: number; // PDF points from page edge
-  scope: DocumentLayerScope;
-}
-
-export interface HeaderFooterConfig {
-  headerLeft: string;
-  headerCenter: string;
-  headerRight: string;
-  footerLeft: string;
-  footerCenter: string;
-  footerRight: string;
-  fontFamily: string;
-  fontSize: number;
-  fontWeight: FontWeight;
-  color: string;
-  marginTop: number; // PDF points from top edge
-  marginBottom: number; // PDF points from bottom edge
-  marginX: number; // PDF points from left/right edges
   scope: DocumentLayerScope;
 }
 

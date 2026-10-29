@@ -55,7 +55,7 @@ export const OcrModal: React.FC<OcrModalProps> = ({
                 OCR Scanned PDF to Editable Text
               </h2>
               <p className="text-[11px] text-neutral-400">
-                Extract editable English &amp; বাংলা text while preserving page layout
+                Extract editable text while preserving page layout
               </p>
             </div>
           </div>
@@ -133,7 +133,7 @@ export const OcrModal: React.FC<OcrModalProps> = ({
                   {[
                     {
                       id: 'eng+ben' as OcrLanguage,
-                      title: 'English + বাংলা',
+                      title: 'English + Bengali',
                       sub: 'Bilingual (Auto)',
                     },
                     {
@@ -143,8 +143,8 @@ export const OcrModal: React.FC<OcrModalProps> = ({
                     },
                     {
                       id: 'ben' as OcrLanguage,
-                      title: 'বাংলা (Bengali)',
-                      sub: 'Unicode Bangla',
+                      title: 'Bengali (Unicode)',
+                      sub: 'Bengali Script',
                     },
                   ].map((opt) => {
                     const active = language === opt.id;

@@ -32,11 +32,11 @@ const FONT_OPTIONS = [
   { label: 'Inter (Sans-Serif)', value: 'Inter' },
   { label: 'Georgia (Serif)', value: 'Georgia' },
   { label: 'JetBrains Mono', value: 'JetBrains Mono' },
-  { label: 'Noto Sans Bengali (বাংলা)', value: 'Noto Sans Bengali' },
-  { label: 'SolaimanLipi (সোলাইমানলিপি)', value: 'SolaimanLipi' },
-  { label: 'Kalpurush (কালপুরুষ)', value: 'Kalpurush' },
-  { label: 'Nikosh (নিকোশ)', value: 'Nikosh' },
-  { label: 'Siyam Rupali (সিয়াম রূপালী)', value: 'Siyam Rupali' },
+  { label: 'Noto Sans Bengali', value: 'Noto Sans Bengali' },
+  { label: 'SolaimanLipi', value: 'SolaimanLipi' },
+  { label: 'Kalpurush', value: 'Kalpurush' },
+  { label: 'Nikosh', value: 'Nikosh' },
+  { label: 'Siyam Rupali', value: 'Siyam Rupali' },
 ];
 
 const POSITION_OPTIONS: { id: WatermarkPosition; label: string }[] = [
@@ -211,13 +211,13 @@ export const WatermarkModal: React.FC<WatermarkModalProps> = ({
               <div className="space-y-3">
                 <div>
                   <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
-                    Watermark Text (English or বাংলা)
+                    Watermark Text
                   </label>
                   <input
                     type="text"
                     value={text}
                     onChange={(e) => setText(e.target.value)}
-                    placeholder="e.g. CONFIDENTIAL / গোপনীয়"
+                    placeholder="e.g. CONFIDENTIAL / DRAFT"
                     className="w-full bg-[#141414] border border-[#383838] focus:border-[#0265dc] rounded-lg px-3 py-2 text-xs text-white outline-none"
                   />
                 </div>

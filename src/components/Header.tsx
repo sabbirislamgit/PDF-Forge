@@ -24,7 +24,6 @@ import {
   Search,
   Stamp,
   Hash,
-  PanelTop,
   Wrench,
   Sparkles,
   Eye,
@@ -89,7 +88,6 @@ interface HeaderProps {
   onToggleFindReplace?: () => void;
   onOpenWatermarkModal?: () => void;
   onOpenPageNumberModal?: () => void;
-  onOpenHeaderFooterModal?: () => void;
   onOpenInvertColorsModal?: () => void;
   onOpenNupModal?: () => void;
   onOpenBatchCropModal?: () => void;
@@ -147,7 +145,6 @@ const HeaderComponent: React.FC<HeaderProps> = ({
   onToggleFindReplace,
   onOpenWatermarkModal,
   onOpenPageNumberModal,
-  onOpenHeaderFooterModal,
   onOpenInvertColorsModal,
   onOpenNupModal,
   onOpenBatchCropModal,
@@ -501,7 +498,7 @@ const HeaderComponent: React.FC<HeaderProps> = ({
             )}
           </div>
 
-          {/* Document Tools Dropdown Menu (OCR, Find & Replace, Watermark, Page Numbers, Header & Footer) */}
+          {/* Document Tools Dropdown Menu (OCR, Find & Replace, Watermark, Page Numbers) */}
           <div className="relative" ref={toolsMenuRef}>
             <button
               type="button"
@@ -538,7 +535,7 @@ const HeaderComponent: React.FC<HeaderProps> = ({
               <div className="absolute left-0 mt-2 w-60 bg-[#1e1e1e] border border-[#383838] rounded-xl shadow-2xl py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100">
                 <div className="px-3 py-1.5 border-b border-[#2e2e2e] flex items-center justify-between text-[11px] text-neutral-400">
                   <span className="font-semibold uppercase tracking-wider">Document Tools</span>
-                  <span className="font-mono text-neutral-300">EN + বাংলা</span>
+                  <span className="font-mono text-neutral-300">OCR Engine</span>
                 </div>
 
                 <div className="py-1">
@@ -555,7 +552,7 @@ const HeaderComponent: React.FC<HeaderProps> = ({
                       <span className="font-medium">OCR Scanned PDF</span>
                     </span>
                     <span className="text-[10px] font-mono text-cyan-400">
-                      {scannedPageCount > 0 ? `${scannedPageCount} scanned` : 'EN/বাংলা'}
+                      {scannedPageCount > 0 ? `${scannedPageCount} scanned` : 'Ready'}
                     </span>
                   </button>
 
@@ -604,21 +601,6 @@ const HeaderComponent: React.FC<HeaderProps> = ({
                       <span className="font-medium">Page Numbering</span>
                     </span>
                     <span className="text-[10px] font-mono text-neutral-500">Auto #</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsToolsMenuOpen(false);
-                      onOpenHeaderFooterModal?.();
-                    }}
-                    className="w-full px-3 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#282a30] flex items-center justify-between transition cursor-pointer"
-                  >
-                    <span className="flex items-center space-x-2.5">
-                      <PanelTop className="w-3.5 h-3.5 text-amber-400" />
-                      <span className="font-medium">Header &amp; Footer</span>
-                    </span>
-                    <span className="text-[10px] font-mono text-neutral-500">Margins</span>
                   </button>
 
                   <button

@@ -80,7 +80,7 @@ export const FindReplaceBar: React.FC<FindReplaceBarProps> = ({
                 onClose();
               }
             }}
-            placeholder="Find text (English or বাংলা)..."
+            placeholder="Find text in document..."
             className="w-full bg-transparent text-xs text-white placeholder-neutral-500 outline-none"
           />
 

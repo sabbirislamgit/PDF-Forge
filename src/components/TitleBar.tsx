@@ -120,7 +120,6 @@ export interface TitleBarProps {
   onToggleFindReplace?: () => void;
   onOpenWatermarkModal?: () => void;
   onOpenPageNumberModal?: () => void;
-  onOpenHeaderFooterModal?: () => void;
   onOpenInvertColorsModal?: () => void;
   onOpenNupModal?: () => void;
   onOpenBatchCropModal?: () => void;
@@ -207,7 +206,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onToggleFindReplace,
   onOpenWatermarkModal,
   onOpenPageNumberModal,
-  onOpenHeaderFooterModal,
   onOpenInvertColorsModal,
   onOpenNupModal,
   onOpenBatchCropModal,
@@ -455,12 +453,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           label: 'Page Numbers',
           icon: <Hash className="w-4 h-4 text-indigo-400" />,
           onClick: () => onOpenPageNumberModal?.(),
-        });
-        items.push({
-          id: 'header-footer',
-          label: 'Header & Footer',
-          icon: <FileText className="w-4 h-4 text-sky-400" />,
-          onClick: () => onOpenHeaderFooterModal?.(),
         });
         items.push({
           id: 'markup',
@@ -837,21 +829,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                   <span className="flex items-center gap-2.5">
                     <Hash className="w-4 h-4 text-indigo-400" />
                     <span>Page Numbers</span>
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={!filename}
-                  onClick={() => {
-                    setIsToolsDropdownOpen(false);
-                    onOpenHeaderFooterModal?.();
-                  }}
-                  className="w-full px-3 py-2 text-left text-xs flex items-center justify-between text-zinc-200 hover:text-white hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  <span className="flex items-center gap-2.5">
-                    <FileText className="w-4 h-4 text-sky-400" />
-                    <span>Header &amp; Footer</span>
                   </span>
                 </button>
               </div>
@@ -1457,16 +1434,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                     >
                       <Hash className="w-5 h-5 text-indigo-400 mb-1" />
                       <span className="text-[11px] font-medium leading-tight">Numbers</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={onOpenHeaderFooterModal}
-                      disabled={!filename}
-                      className="h-[62px] min-w-[52px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 disabled:opacity-40 transition-colors text-zinc-300 hover:text-white"
-                      title="Add Header & Footer"
-                    >
-                      <FileText className="w-5 h-5 text-sky-400 mb-1" />
-                      <span className="text-[11px] font-medium leading-tight">Header</span>
                     </button>
                   </div>
                   <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase text-center select-none">

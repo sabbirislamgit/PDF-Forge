@@ -41,8 +41,8 @@ const FONT_OPTIONS = [
   { label: 'Inter (Sans-Serif)', value: 'Inter' },
   { label: 'Georgia (Serif)', value: 'Georgia' },
   { label: 'JetBrains Mono', value: 'JetBrains Mono' },
-  { label: 'Noto Sans Bengali (বাংলা)', value: 'Noto Sans Bengali' },
-  { label: 'SolaimanLipi (সোলাইমানলিপি)', value: 'SolaimanLipi' },
+  { label: 'Noto Sans Bengali', value: 'Noto Sans Bengali' },
+  { label: 'SolaimanLipi', value: 'SolaimanLipi' },
 ];
 
 export function formatPageNumberString(

@@ -11,7 +11,6 @@ import {
   BlankPageConfig,
   WatermarkConfig,
   PageNumberConfig,
-  HeaderFooterConfig,
   OcrLanguage,
   DocumentLayerScope,
   TextSearchMatch,
@@ -59,13 +58,17 @@ import { DeletePageModal } from './components/DeletePageModal';
 import { PageOrganizerModal } from './components/PageOrganizerModal';
 import { PDFProtectionModal } from './components/PDFProtectionModal';
 import { SaveAsModal } from './components/SaveAsModal';
+import { SaveOptionsModal, SaveChoice } from './components/SaveOptionsModal';
+import { PermissionModal } from './components/PermissionModal';
+import {
+  permissionManager,
+  PermissionRequest,
+} from './utils/permissionManager';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { OcrModal } from './components/OcrModal';
 import { FindReplaceBar } from './components/FindReplaceBar';
 import { WatermarkModal } from './components/WatermarkModal';
 import { PageNumberModal, formatPageNumberString } from './components/PageNumberModal';
-import { HeaderFooterModal, resolveHeaderFooterTemplate } from './components/HeaderFooterModal';
-import { applyHeaderFooterToPdf } from './utils/headerFooter';
 import { InvertColorsModal } from './components/InvertColorsModal';
 import { NupLayoutModal } from './components/NupLayoutModal';
 import { generateNupPdf, NupConfig, NupProgressUpdate } from './utils/nupLayout';
@@ -217,6 +220,9 @@ export default function App() {
   const [exportSuccess, setExportSuccess] = useState<boolean>(false);
   const [savedFilenameToast, setSavedFilenameToast] = useState<string | null>(null);
   const [isSaveAsModalOpen, setIsSaveAsModalOpen] = useState<boolean>(false);
+  const [isSaveOptionsModalOpen, setIsSaveOptionsModalOpen] = useState<boolean>(false);
+  const sessionSaveChoiceRef = useRef<SaveChoice | null>(null);
+  const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
   const [filePath, setFilePath] = useState<string | null>(null);
   const filePathRef = useRef<string | null>(null);
   const fileHandleRef = useRef<unknown>(null);
@@ -259,7 +265,7 @@ export default function App() {
     },
   });
 
-  // Document Tools State (OCR, Find & Replace, Watermark, Page Numbers, Header & Footer)
+  // Document Tools State (OCR, Find & Replace, Watermark, Page Numbers)
   const [isOcrModalOpen, setIsOcrModalOpen] = useState<boolean>(false);
   const [isRunningOcr, setIsRunningOcr] = useState<boolean>(false);
   const [ocrProgress, setOcrProgress] = useState<OcrProgressUpdate | null>(null);
@@ -274,8 +280,6 @@ export default function App() {
 
   const [isWatermarkModalOpen, setIsWatermarkModalOpen] = useState<boolean>(false);
   const [isPageNumberModalOpen, setIsPageNumberModalOpen] = useState<boolean>(false);
-  const [isHeaderFooterModalOpen, setIsHeaderFooterModalOpen] = useState<boolean>(false);
-  const [hasAppliedHeaderFooter, setHasAppliedHeaderFooter] = useState<boolean>(false);
 
   // Invert PDF Colors Tool State
   const [isInvertColorsModalOpen, setIsInvertColorsModalOpen] = useState<boolean>(false);
@@ -329,6 +333,30 @@ export default function App() {
   useEffect(() => {
     loadSavedImportedFonts().catch(() => {});
   }, []);
+
+  // Register Permission Manager dialog and notification handlers
+  useEffect(() => {
+    const unregisterDialog = permissionManager.registerDialogHandler((req) => {
+      setPermissionRequest(req);
+    });
+    const unregisterNotifier = permissionManager.registerDeniedNotifier((msg) => {
+      setErrorToast(msg);
+    });
+    return () => {
+      unregisterDialog();
+      unregisterNotifier();
+    };
+  }, []);
+
+  const handleClosePermissionModal = useCallback(
+    (granted: boolean) => {
+      if (permissionRequest) {
+        permissionRequest.resolve(granted);
+        setPermissionRequest(null);
+      }
+    },
+    [permissionRequest]
+  );
 
   // Professional Fullscreen Engine with window state restoration
   const handleToggleFullscreen = useCallback(async () => {
@@ -2969,9 +2997,9 @@ export default function App() {
     triggerPageToast,
   ]);
 
-  // ================= WATERMARK, PAGE NUMBER & HEADER/FOOTER HANDLERS =================
+  // ================= WATERMARK & PAGE NUMBER HANDLERS =================
   const hasExistingLayerType = useCallback(
-    (layerType: 'watermark' | 'page-number' | 'header-footer') => {
+    (layerType: 'watermark' | 'page-number') => {
       return (Object.values(modifications) as PageModifications[]).some((m) =>
         m.pastedObjects.some((o: PDFObject) => o.layerType === layerType)
       );
@@ -2981,7 +3009,7 @@ export default function App() {
 
   const removeLayerObjectsByScope = useCallback(
     (
-      layerType: 'watermark' | 'page-number' | 'header-footer',
+      layerType: 'watermark' | 'page-number',
       scope: DocumentLayerScope,
       toastLabel: string
     ) => {
@@ -3207,91 +3235,6 @@ export default function App() {
       );
     },
     [activePageIndex, pages, modifications, pushHistory, triggerPageToast]
-  );
-
-  // 5. Apply Header & Footer
-  // 5. Apply Header & Footer directly to the PDF document
-  const handleApplyHeaderFooter = useCallback(
-    async (config: HeaderFooterConfig) => {
-      if (!pdfBytes || pdfBytes.length === 0) return;
-
-      setIsProcessing(true);
-      setLoadingMessage('Applying Header & Footer to document...');
-
-      try {
-        // Compile any current modifications (drawings, text edits, rotations, blank pages) first
-        const compiledBytes = await applyModificationsAndExport(
-          pdfBytes.slice(),
-          modifications,
-          allOriginalObjectsMap,
-          pages,
-          protectionConfig,
-          pdfDocProxy,
-          pageObjectsMap
-        );
-
-        // Apply headers & footers directly to the PDF document pages using the dedicated engine
-        const modifiedBytes = await applyHeaderFooterToPdf(
-          compiledBytes,
-          pages,
-          config,
-          activePageIndex,
-          filename
-        );
-
-        setHasAppliedHeaderFooter(true);
-
-        // Load modified PDF with headers & footers permanently applied into the editor
-        await loadPdfFromBytes(
-          modifiedBytes,
-          filename || 'Document.pdf',
-          filePathRef.current,
-          fileHandleRef.current
-        );
-
-        triggerPageToast(
-          config.scope === 'all'
-            ? `Applied Header & Footer across all ${pages.length} pages`
-            : `Applied Header & Footer on Page ${activePageIndex + 1}`
-        );
-      } catch (err: unknown) {
-        setErrorToast(
-          err instanceof Error
-            ? `Failed to apply Header & Footer: ${err.message}`
-            : 'Failed to apply Header & Footer. Please try again.'
-        );
-      } finally {
-        setIsProcessing(false);
-        setLoadingMessage('');
-      }
-    },
-    [
-      pdfBytes,
-      modifications,
-      allOriginalObjectsMap,
-      pages,
-      protectionConfig,
-      pdfDocProxy,
-      pageObjectsMap,
-      activePageIndex,
-      filename,
-      loadPdfFromBytes,
-      triggerPageToast,
-    ]
-  );
-
-  const handleRemoveHeaderFooter = useCallback(
-    (scope: DocumentLayerScope) => {
-      if (historyIndex > 0) {
-        handleUndo();
-        setHasAppliedHeaderFooter(false);
-        triggerPageToast('Removed headers & footers');
-      } else {
-        removeLayerObjectsByScope('header-footer', scope, 'headers & footers');
-        setHasAppliedHeaderFooter(false);
-      }
-    },
-    [historyIndex, handleUndo, removeLayerObjectsByScope, triggerPageToast]
   );
 
   // ================= INVERT PDF COLORS WORKFLOW =================
@@ -3566,8 +3509,8 @@ export default function App() {
   }, []);
 
   // ================= SAVE & SAVE AS WORKFLOW =================
-  // 1. Save (Preserves original filename and updates the currently opened PDF in-place without exporting a new file)
-  const handleSavePdf = useCallback(async () => {
+  // Direct Save Executor (Preserves original filename and updates the currently opened PDF in-place without exporting a new file)
+  const handleExecuteDirectSave = useCallback(async () => {
     if (!pdfBytes || pdfBytes.length === 0) return;
 
     setIsProcessing(true);
@@ -3658,6 +3601,34 @@ export default function App() {
     pageObjectsMap,
     triggerPageToast,
   ]);
+
+  // Professional Save Workflow: Check session choice or prompt Save Options dialog
+  const handleSavePdf = useCallback(async () => {
+    if (!pdfBytes || pdfBytes.length === 0) return;
+
+    if (sessionSaveChoiceRef.current === 'original') {
+      await handleExecuteDirectSave();
+    } else if (sessionSaveChoiceRef.current === 'new') {
+      setIsSaveAsModalOpen(true);
+    } else {
+      setIsSaveOptionsModalOpen(true);
+    }
+  }, [pdfBytes, handleExecuteDirectSave]);
+
+  const handleConfirmSaveChoice = useCallback(
+    async (choice: SaveChoice, rememberSession: boolean) => {
+      setIsSaveOptionsModalOpen(false);
+      if (rememberSession) {
+        sessionSaveChoiceRef.current = choice;
+      }
+      if (choice === 'original') {
+        await handleExecuteDirectSave();
+      } else {
+        setIsSaveAsModalOpen(true);
+      }
+    },
+    [handleExecuteDirectSave]
+  );
 
   // 2. Save As (Choose custom filename, choose destination folder via system dialog, optionally switch active session to new file)
   const handleConfirmSaveAs = useCallback(
@@ -3760,7 +3731,6 @@ export default function App() {
     setSelectedObjectIds(new Set());
     setEditingTextObjectId(null);
     setMatches([]);
-    setHasAppliedHeaderFooter(false);
     setIsCloseConfirmOpen(false);
     fileHandleRef.current = null;
     filePathRef.current = null;
@@ -3947,7 +3917,6 @@ export default function App() {
         setIsFindReplaceOpen(false);
         setIsWatermarkModalOpen(false);
         setIsPageNumberModalOpen(false);
-        setIsHeaderFooterModalOpen(false);
         if (!isRunningOcr) {
           setIsOcrModalOpen(false);
         }
@@ -4118,7 +4087,6 @@ export default function App() {
         onToggleFindReplace={() => setIsFindReplaceOpen((prev) => !prev)}
         onOpenWatermarkModal={() => setIsWatermarkModalOpen(true)}
         onOpenPageNumberModal={() => setIsPageNumberModalOpen(true)}
-        onOpenHeaderFooterModal={() => setIsHeaderFooterModalOpen(true)}
         onOpenInvertColorsModal={() => setIsInvertColorsModalOpen(true)}
         onOpenNupModal={() => setIsNupModalOpen(true)}
         onOpenBatchCropModal={() => setIsBatchCropModalOpen(true)}
@@ -4430,18 +4398,6 @@ export default function App() {
         }
       />
 
-      {/* Editable Header & Footer Modal */}
-      <HeaderFooterModal
-        isOpen={isHeaderFooterModalOpen}
-        filename={filename}
-        currentPageNumber={activePageIndex + 1}
-        totalPages={pages.length}
-        hasExistingHeaderFooter={hasAppliedHeaderFooter || hasExistingLayerType('header-footer')}
-        onClose={() => setIsHeaderFooterModalOpen(false)}
-        onApplyHeaderFooter={handleApplyHeaderFooter}
-        onRemoveHeaderFooter={handleRemoveHeaderFooter}
-      />
-
       {/* Add Blank Page Modal */}
       <AddBlankPageModal
         isOpen={isAddBlankPageModalOpen}
@@ -4486,6 +4442,21 @@ export default function App() {
         onDuplicatePages={handleDuplicatePagesBatch}
         onDeletePages={handleDeletePagesBatch}
         onInsertBlankPage={handleInsertBlankPageAt}
+      />
+
+      {/* PDF Forge Security Permission Modal */}
+      <PermissionModal
+        request={permissionRequest}
+        onClose={handleClosePermissionModal}
+      />
+
+      {/* Save Options Workflow Modal (Save to Original File vs Save as New File) */}
+      <SaveOptionsModal
+        isOpen={isSaveOptionsModalOpen}
+        currentFilename={filename}
+        currentFilePath={filePathRef.current}
+        onClose={() => setIsSaveOptionsModalOpen(false)}
+        onConfirm={handleConfirmSaveChoice}
       />
 
       {/* Save As Modal */}

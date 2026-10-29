@@ -1,6 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import { createWorker } from 'tesseract.js';
 import { OcrLanguage, PageInfo, PDFObject } from '../types/pdf';
+import { calculateTextBoxMetrics } from './textEngine';
 
 export interface OcrProgressUpdate {
   currentPage: number;
@@ -421,19 +422,24 @@ export async function runOcrOnPages(
           y1
         );
 
+        const ocrFont = hasBengaliScript ? 'Noto Sans Bengali' : 'Inter';
+        const metrics = calculateTextBoxMetrics(cleanText, estimatedFontSize, ocrFont);
+        const finalW = Math.max(pdfW, metrics.width);
+        const finalH = Math.max(pdfH, metrics.height);
+
         extractedObjects.push({
           id: `ocr-${uid}-${lineIdx}`,
           pageIndex: pageIdx,
           type: 'text',
           bounds: {
             x: Math.round(pdfX * 10) / 10,
-            y: Math.round(pdfY * 10) / 10,
-            width: Math.round(pdfW * 10) / 10,
-            height: Math.round(pdfH * 10) / 10,
+            y: Math.round((pdfY - (finalH - pdfH) / 2) * 10) / 10,
+            width: Math.round(finalW * 10) / 10,
+            height: Math.round(finalH * 10) / 10,
           },
           text: cleanText,
           fontSize: estimatedFontSize,
-          fontFamily: hasBengaliScript ? 'Noto Sans Bengali' : 'Inter',
+          fontFamily: ocrFont,
           fontWeight: 'normal',
           fontStyle: 'normal',
           underline: false,

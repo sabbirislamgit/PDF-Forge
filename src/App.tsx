@@ -75,6 +75,8 @@ import {
   BatchCropOptions,
   BatchCropProgressUpdate,
 } from './utils/batchCrop';
+import { calculateTextBoxMetrics } from './utils/textEngine';
+import { loadSavedImportedFonts } from './utils/fontSystem';
 import { EmptyState } from './components/EmptyState';
 import { StatusBar } from './components/StatusBar';
 import { Trash2, Undo2, X, Check, AlertTriangle, Maximize2 } from 'lucide-react';
@@ -215,12 +217,15 @@ export default function App() {
   const [exportSuccess, setExportSuccess] = useState<boolean>(false);
   const [savedFilenameToast, setSavedFilenameToast] = useState<string | null>(null);
   const [isSaveAsModalOpen, setIsSaveAsModalOpen] = useState<boolean>(false);
+  const [filePath, setFilePath] = useState<string | null>(null);
+  const filePathRef = useRef<string | null>(null);
   const fileHandleRef = useRef<unknown>(null);
 
   // Desktop Window Controls State (works in both Tauri desktop & browser preview)
   const [isWindowMaximized, setIsWindowMaximized] = useState<boolean>(false);
   const [isWindowMinimized, setIsWindowMinimized] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const wasMaximizedBeforeFullscreenRef = useRef<boolean>(false);
   const [isCloseConfirmOpen, setIsCloseConfirmOpen] = useState<boolean>(false);
 
   // Direct-on-Page Editor Tool Settings (Text, Image, Freehand Draw)
@@ -320,10 +325,94 @@ export default function App() {
     return () => window.removeEventListener('resize', handleBreakpointResize);
   }, []);
 
+  // Initialize and register custom imported fonts between sessions
+  useEffect(() => {
+    loadSavedImportedFonts().catch(() => {});
+  }, []);
+
+  // Professional Fullscreen Engine with window state restoration
+  const handleToggleFullscreen = useCallback(async () => {
+    try {
+      const isTauri =
+        typeof window !== 'undefined' &&
+        ('__TAURI__' in window || '__TAURI_INTERNALS__' in window);
+
+      if (isTauri) {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        const currentlyFs = await win.isFullscreen();
+        if (!currentlyFs) {
+          wasMaximizedBeforeFullscreenRef.current = await win.isMaximized();
+          await win.setFullscreen(true);
+          setIsFullscreen(true);
+        } else {
+          await win.setFullscreen(false);
+          setIsFullscreen(false);
+          if (wasMaximizedBeforeFullscreenRef.current) {
+            await win.maximize();
+            setIsWindowMaximized(true);
+          } else {
+            await win.unmaximize();
+            setIsWindowMaximized(false);
+          }
+        }
+      } else {
+        // Browser / Web fallback
+        if (!document.fullscreenElement) {
+          wasMaximizedBeforeFullscreenRef.current = isWindowMaximized;
+          await document.documentElement.requestFullscreen();
+          setIsFullscreen(true);
+        } else {
+          await document.exitFullscreen();
+          setIsFullscreen(false);
+          setIsWindowMaximized(wasMaximizedBeforeFullscreenRef.current);
+        }
+      }
+    } catch (err) {
+      console.warn('Fullscreen toggle failed:', err);
+    }
+  }, [isWindowMaximized]);
+
+  const handleExitFullscreen = useCallback(async () => {
+    try {
+      const isTauri =
+        typeof window !== 'undefined' &&
+        ('__TAURI__' in window || '__TAURI_INTERNALS__' in window);
+
+      if (isTauri) {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        if (await win.isFullscreen()) {
+          await win.setFullscreen(false);
+          setIsFullscreen(false);
+          if (wasMaximizedBeforeFullscreenRef.current) {
+            await win.maximize();
+            setIsWindowMaximized(true);
+          } else {
+            await win.unmaximize();
+            setIsWindowMaximized(false);
+          }
+        }
+      } else {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+          setIsFullscreen(false);
+          setIsWindowMaximized(wasMaximizedBeforeFullscreenRef.current);
+        }
+      }
+    } catch (err) {
+      console.warn('Exit fullscreen failed:', err);
+    }
+  }, []);
+
   // Sync browser Fullscreen state changes
   useEffect(() => {
     const handleFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
+      const fsActive = Boolean(document.fullscreenElement);
+      setIsFullscreen(fsActive);
+      if (!fsActive && wasMaximizedBeforeFullscreenRef.current) {
+        setIsWindowMaximized(true);
+      }
     };
     document.addEventListener('fullscreenchange', handleFsChange);
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
@@ -803,7 +892,11 @@ export default function App() {
 
   // 4. Rearrange Pages (Drag & Drop)
   const handleReorderPages = useCallback(
-    (fromIndex: number, toIndex: number) => {
+    (
+      fromIndex: number,
+      toIndex: number,
+      options?: { skipToast?: boolean; skipHistory?: boolean }
+    ) => {
       if (
         fromIndex === toIndex ||
         fromIndex < 0 ||
@@ -824,9 +917,18 @@ export default function App() {
       bundles.splice(toIndex, 0, movedBundle);
 
       const { nextPages, nextObjectsMap, nextMods } = rebuildIndexedDocument(bundles);
-      commitDocumentState(nextPages, nextObjectsMap, nextMods, toIndex);
+      if (options?.skipHistory) {
+        setPages(nextPages);
+        setPageObjectsMap(nextObjectsMap);
+        setModifications(nextMods);
+        setActivePageIndex(toIndex);
+      } else {
+        commitDocumentState(nextPages, nextObjectsMap, nextMods, toIndex);
+      }
       setScrollToPageIndex(toIndex);
-      triggerPageToast(`Moved Page ${fromIndex + 1} to Page ${toIndex + 1}`);
+      if (!options?.skipToast) {
+        triggerPageToast(`Moved Page ${fromIndex + 1} to Page ${toIndex + 1}`);
+      }
     },
     [
       pages,
@@ -836,6 +938,15 @@ export default function App() {
       commitDocumentState,
       triggerPageToast,
     ]
+  );
+
+  const handleCommitReorder = useCallback(
+    (fromIndex: number, toIndex: number) => {
+      if (fromIndex === toIndex) return;
+      commitDocumentState(pages, pageObjectsMap, modifications, toIndex);
+      triggerPageToast(`Moved Page ${fromIndex + 1} to Page ${toIndex + 1}`);
+    },
+    [pages, pageObjectsMap, modifications, commitDocumentState, triggerPageToast]
   );
 
   // Batch Reorder Pages (Multi-page Drag & Drop)
@@ -1164,10 +1275,22 @@ export default function App() {
   );
 
   // Load and parse uploaded PDF bytes with memory cleanup & invalid PDF handling
-  const loadPdfFromBytes = async (bytes: Uint8Array, docName: string) => {
+  const loadPdfFromBytes = async (
+    bytes: Uint8Array,
+    docName: string,
+    path?: string | null,
+    handle?: unknown
+  ) => {
     setIsProcessing(true);
     setErrorToast(null);
     setLoadingMessage('Loading PDF and analyzing pages...');
+    if (path !== undefined) {
+      filePathRef.current = path;
+      setFilePath(path);
+    }
+    if (handle !== undefined) {
+      fileHandleRef.current = handle;
+    }
     try {
       // Clean up previous PDF proxy and caches to prevent memory leaks
       clearPdfRenderCaches();
@@ -1379,17 +1502,21 @@ export default function App() {
   };
 
   // Handle User File Upload
-  const handleFileSelected = useCallback((file: File) => {
+  const handleFileSelected = useCallback((file: File, handle?: unknown) => {
     if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
       setErrorToast('Please select a valid PDF document (.pdf).');
       return;
     }
-    fileHandleRef.current = null;
+    const detectedPath = (file as unknown as { path?: string }).path || null;
+    fileHandleRef.current = handle || null;
+    filePathRef.current = detectedPath;
+    setFilePath(detectedPath);
+
     const reader = new FileReader();
     reader.onload = async (e) => {
       const buffer = e.target?.result as ArrayBuffer;
       if (buffer && buffer.byteLength > 0) {
-        await loadPdfFromBytes(new Uint8Array(buffer), file.name);
+        await loadPdfFromBytes(new Uint8Array(buffer), file.name, detectedPath, handle || null);
       } else {
         setErrorToast('The selected file appears to be empty.');
       }
@@ -1398,7 +1525,57 @@ export default function App() {
       setErrorToast('Failed to read the selected file from disk.');
     };
     reader.readAsArrayBuffer(file);
-  }, [pdfDocProxy]);
+  }, [loadPdfFromBytes]);
+
+  // Open PDF directly from its existing file path using native File System Access API
+  const handleOpenFile = useCallback(async () => {
+    if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
+      try {
+        const picker = (window as unknown as {
+          showOpenFilePicker: (opts: unknown) => Promise<Array<{
+            name: string;
+            getFile: () => Promise<File>;
+          }>>;
+        }).showOpenFilePicker;
+
+        const handles = await picker({
+          types: [
+            {
+              description: 'PDF Document (*.pdf)',
+              accept: { 'application/pdf': ['.pdf'] },
+            },
+          ],
+          multiple: false,
+        });
+
+        if (handles && handles.length > 0) {
+          const handle = handles[0];
+          const file = await handle.getFile();
+          const detectedPath = (file as unknown as { path?: string }).path || null;
+          fileHandleRef.current = handle;
+          filePathRef.current = detectedPath;
+          setFilePath(detectedPath);
+
+          const buffer = await file.arrayBuffer();
+          if (buffer && buffer.byteLength > 0) {
+            await loadPdfFromBytes(new Uint8Array(buffer), file.name, detectedPath, handle);
+          } else {
+            setErrorToast('The selected file appears to be empty.');
+          }
+          return;
+        }
+      } catch (err: unknown) {
+        if ((err as Error)?.name === 'AbortError') {
+          return;
+        }
+      }
+    }
+
+    const input = document.querySelector('input[type="file"][accept*="pdf"]') as HTMLInputElement;
+    if (input) {
+      input.click();
+    }
+  }, [loadPdfFromBytes]);
 
   // ================= DIRECT PAGE TOOLS: ADD TEXT, ADD IMAGE, FREEHAND DRAW =================
   const handleAddObjectOnPage = useCallback(
@@ -2858,9 +3035,14 @@ export default function App() {
         let objW = 260;
         let objH = 68;
         if (config.mode === 'text') {
-          const charCount = Math.max(4, config.text.length);
-          objW = Math.min(pageInfo.width - 40, Math.max(120, charCount * config.fontSize * 0.65));
-          objH = Math.max(36, config.fontSize * 1.45);
+          const metrics = calculateTextBoxMetrics(
+            config.text,
+            config.fontSize,
+            config.fontFamily,
+            { fontWeight: config.fontWeight }
+          );
+          objW = Math.min(pageInfo.width - 40, Math.max(100, metrics.width));
+          objH = Math.min(pageInfo.height - 40, Math.max(32, metrics.height));
         } else {
           objW = Math.min(
             pageInfo.width - 40,
@@ -3060,7 +3242,12 @@ export default function App() {
         setHasAppliedHeaderFooter(true);
 
         // Load modified PDF with headers & footers permanently applied into the editor
-        await loadPdfFromBytes(modifiedBytes, filename || 'Document.pdf');
+        await loadPdfFromBytes(
+          modifiedBytes,
+          filename || 'Document.pdf',
+          filePathRef.current,
+          fileHandleRef.current
+        );
 
         triggerPageToast(
           config.scope === 'all'
@@ -3379,12 +3566,12 @@ export default function App() {
   }, []);
 
   // ================= SAVE & SAVE AS WORKFLOW =================
-  // 1. Save (Preserves original filename by default, writes to existing file handle or prompts location)
+  // 1. Save (Preserves original filename and updates the currently opened PDF in-place without exporting a new file)
   const handleSavePdf = useCallback(async () => {
     if (!pdfBytes || pdfBytes.length === 0) return;
 
     setIsProcessing(true);
-    setLoadingMessage('Saving PDF with original filename and vector quality preserved...');
+    setLoadingMessage('Saving PDF with edits and page order preserved...');
     try {
       const modifiedBytes = await applyModificationsAndExport(
         pdfBytes.slice(),
@@ -3396,23 +3583,63 @@ export default function App() {
         pageObjectsMap
       );
 
-      // Preserve the original filename by default
+      // Preserve the original filename and file path by default
       const targetFilename = filename || 'document.pdf';
       const saveResult = await savePdfToDestination(modifiedBytes, targetFilename, {
         forceSystemPicker: false,
         existingHandle: fileHandleRef.current,
+        existingPath: filePathRef.current,
       });
 
       if (saveResult.cancelled) {
         return;
       }
 
+      if (!saveResult.saved) {
+        if (saveResult.needsSaveAs) {
+          setIsSaveAsModalOpen(true);
+        } else {
+          setErrorToast('Unable to update the opened PDF file directly. Please use Save As.');
+        }
+        return;
+      }
+
       if (saveResult.fileHandle) {
         fileHandleRef.current = saveResult.fileHandle;
       }
+      if (saveResult.filePath) {
+        filePathRef.current = saveResult.filePath;
+        setFilePath(saveResult.filePath);
+      }
 
-      setSavedFilenameToast(saveResult.filename);
+      // Update internal working pdfBytes to the newly compiled bytes
+      setPdfBytes(modifiedBytes);
+
+      // In the saved document, the pages are now permanently in order 0..N-1
+      const normalizedPages = pages.map((p, idx) => ({
+        ...p,
+        pageIndex: idx,
+        pageNumber: idx + 1,
+        originalPageIndex: idx,
+      }));
+      setPages(normalizedPages);
+
+      // Refresh pdfDocProxy with modifiedBytes so viewer/thumbnails are in sync with saved bytes
+      try {
+        const loadingTask = pdfjsLib.getDocument({
+          data: modifiedBytes.slice(),
+          cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/',
+          cMapPacked: true,
+        });
+        const newProxy = await loadingTask.promise;
+        setPdfDocProxy(newProxy);
+      } catch {
+        // ignore proxy refresh error
+      }
+
+      setSavedFilenameToast(saveResult.filename || targetFilename);
       setExportSuccess(true);
+      triggerPageToast(`Saved "${saveResult.filename || targetFilename}"`);
       setTimeout(() => setExportSuccess(false), 3200);
     } catch {
       setErrorToast('Failed to save PDF. Please try again.');
@@ -3420,7 +3647,17 @@ export default function App() {
       setIsProcessing(false);
       setLoadingMessage('');
     }
-  }, [pdfBytes, modifications, allOriginalObjectsMap, pages, protectionConfig, pdfDocProxy, filename, pageObjectsMap]);
+  }, [
+    pdfBytes,
+    modifications,
+    allOriginalObjectsMap,
+    pages,
+    protectionConfig,
+    pdfDocProxy,
+    filename,
+    pageObjectsMap,
+    triggerPageToast,
+  ]);
 
   // 2. Save As (Choose custom filename, choose destination folder via system dialog, optionally switch active session to new file)
   const handleConfirmSaveAs = useCallback(
@@ -3448,19 +3685,42 @@ export default function App() {
         const saveResult = await savePdfToDestination(modifiedBytes, options.targetFilename, {
           forceSystemPicker: options.useSystemPicker,
           existingHandle: null,
+          existingPath: null,
         });
 
         if (saveResult.cancelled) {
           return;
         }
 
-        if (saveResult.fileHandle) {
-          fileHandleRef.current = saveResult.fileHandle;
-        }
-
-        // If user enabled "Continue editing as this new file", update active document name
-        if (options.switchActiveDocument) {
+        if (options.switchActiveDocument && saveResult.saved) {
+          if (saveResult.fileHandle) {
+            fileHandleRef.current = saveResult.fileHandle;
+          }
+          if (saveResult.filePath) {
+            filePathRef.current = saveResult.filePath;
+            setFilePath(saveResult.filePath);
+          }
           setFilename(saveResult.filename);
+          setPdfBytes(modifiedBytes);
+          const normalizedPages = pages.map((p, idx) => ({
+            ...p,
+            pageIndex: idx,
+            pageNumber: idx + 1,
+            originalPageIndex: idx,
+          }));
+          setPages(normalizedPages);
+
+          try {
+            const loadingTask = pdfjsLib.getDocument({
+              data: modifiedBytes.slice(),
+              cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/',
+              cMapPacked: true,
+            });
+            const newProxy = await loadingTask.promise;
+            setPdfDocProxy(newProxy);
+          } catch {
+            // ignore proxy refresh error
+          }
         }
 
         setSavedFilenameToast(saveResult.filename);
@@ -3503,13 +3763,84 @@ export default function App() {
     setHasAppliedHeaderFooter(false);
     setIsCloseConfirmOpen(false);
     fileHandleRef.current = null;
+    filePathRef.current = null;
+    setFilePath(null);
   }, []);
+
+  // Tauri window drag-and-drop listener: opens original dropped PDF directly from disk
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const setupTauriDrop = async () => {
+      try {
+        if (
+          typeof window !== 'undefined' &&
+          ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+        ) {
+          const { getCurrentWindow } = await import('@tauri-apps/api/window');
+          unlisten = await getCurrentWindow().onDragDropEvent(async (event) => {
+            if (
+              event.payload.type === 'drop' &&
+              event.payload.paths &&
+              event.payload.paths.length > 0
+            ) {
+              const droppedPath = event.payload.paths[0];
+              if (droppedPath.toLowerCase().endsWith('.pdf')) {
+                try {
+                  const { invoke } = await import('@tauri-apps/api/core');
+                  const bytesArray = (await invoke('read_pdf_file', {
+                    path: droppedPath,
+                  })) as number[];
+                  const bytes = new Uint8Array(bytesArray);
+                  const name = droppedPath.split(/[\\/]/).pop() || 'document.pdf';
+                  fileHandleRef.current = null;
+                  filePathRef.current = droppedPath;
+                  setFilePath(droppedPath);
+                  await loadPdfFromBytes(bytes, name, droppedPath, null);
+                } catch {
+                  // ignore
+                }
+              }
+            }
+          });
+        }
+      } catch {
+        // Not in Tauri
+      }
+    };
+    setupTauriDrop();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [loadPdfFromBytes]);
 
   // Keyboard Shortcuts Listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
       const isCmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      // Full Screen: F11
+      if (e.key === 'F11') {
+        e.preventDefault();
+        handleToggleFullscreen();
+        return;
+      }
+
+      // Exit Full Screen: Escape
+      if (e.key === 'Escape') {
+        if (isFullscreen || document.fullscreenElement) {
+          e.preventDefault();
+          handleExitFullscreen();
+          return;
+        }
+      }
+
+      // Open: Ctrl+O / Cmd+O
+      if (isCmdOrCtrl && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        handleOpenFile();
+        return;
+      }
 
       // Save: Ctrl+S / Cmd+S and Save As: Ctrl+Shift+S / Cmd+Shift+S
       if (isCmdOrCtrl && e.key.toLowerCase() === 's' && filename) {
@@ -3737,7 +4068,7 @@ export default function App() {
         onTriggerUploadImageTool={handleTriggerImageUploadFromToolbar}
         onMinimizeWindow={() => setIsWindowMinimized(true)}
         onToggleWindowMaximize={() => setIsWindowMaximized((prev) => !prev)}
-        onToggleFullscreen={() => setIsFullscreen(Boolean(document.fullscreenElement))}
+        onToggleFullscreen={handleToggleFullscreen}
         onCloseWindow={() => {
           if (filename && hasModifications) {
             setIsCloseConfirmOpen(true);
@@ -3772,6 +4103,7 @@ export default function App() {
         onFindSameObject={() => handleFindEverywhere()}
         onHighlightSameObjectMatches={() => handleHighlightSameObjectMatches()}
         onReplaceSameObject={handleOpenReplaceSameObject}
+        onOpenFile={handleOpenFile}
         onFileSelected={handleFileSelected}
         onSave={handleSavePdf}
         onExport={handleSavePdf}
@@ -3997,6 +4329,7 @@ export default function App() {
         </div>
       ) : (
         <EmptyState
+          onOpenFile={handleOpenFile}
           onFileSelected={handleFileSelected}
           isProcessing={isProcessing}
         />
@@ -4147,6 +4480,7 @@ export default function App() {
           setScrollToPageIndex(idx);
         }}
         onReorderPages={handleReorderPages}
+        onCommitReorder={handleCommitReorder}
         onReorderPagesBatch={handleReorderPagesBatch}
         onRotatePages={handleRotatePagesBatch}
         onDuplicatePages={handleDuplicatePagesBatch}

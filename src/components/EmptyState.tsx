@@ -2,24 +2,50 @@ import React, { useRef } from 'react';
 import { FileUp } from 'lucide-react';
 
 interface EmptyStateProps {
-  onFileSelected: (file: File) => void;
+  onFileSelected: (file: File, handle?: unknown) => void;
+  onOpenFile?: () => void;
   isProcessing: boolean;
 }
 
 export const EmptyState: React.FC<EmptyStateProps> = ({
   onFileSelected,
+  onOpenFile,
   isProcessing,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
+    let fileHandle: unknown = null;
+    if (e.dataTransfer.items) {
+      for (const item of Array.from(e.dataTransfer.items)) {
+        if (item.kind === 'file' && typeof (item as any).getAsFileSystemHandle === 'function') {
+          try {
+            const h = await (item as any).getAsFileSystemHandle();
+            if (h && h.kind === 'file') {
+              fileHandle = h;
+              break;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
     const file = e.dataTransfer.files?.[0];
     if (
       file &&
       (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
     ) {
-      onFileSelected(file);
+      onFileSelected(file, fileHandle);
+    }
+  };
+
+  const triggerOpen = () => {
+    if (onOpenFile) {
+      onOpenFile();
+    } else {
+      fileInputRef.current?.click();
     }
   };
 
@@ -62,11 +88,11 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           aria-label="Upload PDF document by dragging and dropping or clicking to browse"
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
+          onClick={triggerOpen}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              fileInputRef.current?.click();
+              triggerOpen();
             }
           }}
           className="border-2 border-dashed border-[#383838] hover:border-[#0265dc] focus:border-[#0265dc] focus:outline-none bg-[#1c1c1e] hover:bg-[#202024] rounded-2xl p-10 sm:p-12 text-center cursor-pointer transition group shadow-2xl flex flex-col items-center justify-center space-y-4"
@@ -88,7 +114,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              fileInputRef.current?.click();
+              triggerOpen();
             }}
             disabled={isProcessing}
             className="px-5 py-2.5 bg-[#0265dc] hover:bg-[#0151b0] text-white text-xs font-semibold rounded-lg shadow-md hover:shadow-blue-900/50 transition-all flex items-center space-x-2"

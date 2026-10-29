@@ -184,7 +184,8 @@ export function getCssFontStack(fontFamily?: string): string {
   if (!fontFamily) {
     return 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans Bengali", "SolaimanLipi", sans-serif';
   }
-  const lower = fontFamily.toLowerCase();
+  const cleanFamily = fontFamily.replace(/["']/g, '').trim();
+  const lower = cleanFamily.toLowerCase();
   if (lower.includes('solaiman')) {
     return '"SolaimanLipi", "Noto Sans Bengali", "Hind Siliguri", sans-serif';
   }
@@ -200,13 +201,16 @@ export function getCssFontStack(fontFamily?: string): string {
   if (lower.includes('noto') || lower.includes('bengali') || lower.includes('bangla')) {
     return '"Noto Sans Bengali", "Hind Siliguri", "SolaimanLipi", sans-serif';
   }
-  if (lower.includes('mono') || lower.includes('courier')) {
-    return '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Noto Sans Bengali", monospace';
+  if (lower === 'monospace' || lower.includes('courier')) {
+    return '"JetBrains Mono", Consolas, "Courier New", Courier, monospace';
   }
-  if (lower.includes('serif') && !lower.includes('sans')) {
-    return 'Georgia, Cambria, "Times New Roman", Times, "Tiro Bangla", "Noto Sans Bengali", serif';
+  if (lower === 'serif' || lower.includes('times')) {
+    return '"Times New Roman", Times, Georgia, Cambria, serif';
   }
-  return 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans Bengali", "SolaimanLipi", sans-serif';
+  if (lower === 'sans-serif' || lower.includes('helvetica') || lower === 'arial') {
+    return 'Arial, Helvetica, -apple-system, BlinkMacSystemFont, sans-serif';
+  }
+  return `"${cleanFamily}", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans Bengali", "SolaimanLipi", sans-serif`;
 }
 
 /**
@@ -266,24 +270,27 @@ function shouldUseShapedCanvasForText(opts: TextRenderOptions): boolean {
   if (typeof document === 'undefined') return false;
 
   // Characters outside WinAnsi encoding (e.g. Bengali \u0980-\u09FF, Devanagari, Arabic, CJK, Emoji)
-  // StandardFonts in PDF support Latin-1 / WinAnsi characters (0x20-0xFF)
   if (/[^\x09\x0A\x0D\x20-\xFF]/.test(opts.text)) return true;
 
-  // Check for complex script font families that require browser OpenType/HarfBuzz font shaping
-  const fam = (opts.fontFamily || '').toLowerCase();
-  if (
-    fam.includes('solaiman') ||
-    fam.includes('kalpurush') ||
-    fam.includes('nikosh') ||
-    fam.includes('siyam') ||
-    fam.includes('rupali') ||
-    fam.includes('bengali') ||
-    fam.includes('bangla')
-  ) {
+  // If font is a custom imported or installed system font outside standard PDF fonts,
+  // render via high-res canvas shaping so the user's selected typography is preserved!
+  const fam = (opts.fontFamily || '').toLowerCase().replace(/["']/g, '').trim();
+  const isBuiltInPdfFont = [
+    'helvetica',
+    'times',
+    'times-roman',
+    'times new roman',
+    'courier',
+    'courier new',
+    'sans-serif',
+    'serif',
+    'monospace',
+  ].includes(fam);
+
+  if (!isBuiltInPdfFont) {
     return true;
   }
 
-  // All standard Latin/ASCII text is rendered using pure PDF vector primitives
   return false;
 }
 
@@ -306,8 +313,58 @@ async function renderRichTextToHighResPng(
     // ignore font ready errors
   }
 
+  const fontSize = opts.fontSize || 12;
+  const fontWeight = opts.fontWeight === 'bold' ? '700' : '400';
+  const fontStyle = opts.fontStyle === 'italic' ? 'italic' : 'normal';
+  const fontStack = getCssFontStack(opts.fontFamily);
+  const isComplex = /[^\x09\x0A\x0D\x20-\xFF]/.test(opts.text);
+  const lineHeightMultiplier = opts.lineHeight || (isComplex ? 1.45 : 1.28);
+  const lineHeightPx = fontSize * lineHeightMultiplier;
+  const letterSpacingPx = opts.letterSpacing || 0;
+  const textAlign = opts.textAlign || 'left';
+
+  // Word-wrap paragraphs to fit boxW
+  const paragraphs = opts.text.replace(/\r\n/g, '\n').split('\n');
+  const lines: string[] = [];
+  const maxLineWidth = Math.max(fontSize, opts.bounds.width + 2);
+
+  const measureCanvas = document.createElement('canvas');
+  const measureCtx = measureCanvas.getContext('2d');
+  if (measureCtx) {
+    measureCtx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontStack}`;
+  }
+
+  for (const para of paragraphs) {
+    if (!para.trim()) {
+      lines.push('');
+      continue;
+    }
+    const words = para.split(/\s+/);
+    let currentLine = '';
+    for (const word of words) {
+      const candidate = currentLine ? `${currentLine} ${word}` : word;
+      let w = candidate.length * fontSize * 0.55;
+      if (measureCtx) {
+        w = measureCtx.measureText(candidate).width;
+      }
+      if (w <= maxLineWidth || !currentLine) {
+        currentLine = candidate;
+      } else {
+        lines.push(currentLine);
+        currentLine = word;
+      }
+    }
+    if (currentLine) {
+      lines.push(currentLine);
+    }
+  }
+
+  const totalTextHeight = Math.max(1, lines.length) * lineHeightPx;
+  const verticalPadding = fontSize * (isComplex ? 0.35 : 0.18);
+  const neededBoxH = totalTextHeight + verticalPadding * 2;
+
   const boxW = Math.max(16, opts.bounds.width);
-  const boxH = Math.max(12, opts.bounds.height);
+  const boxH = Math.max(12, Math.max(opts.bounds.height, neededBoxH));
   const canvasW = Math.max(1, Math.ceil(boxW * dpiScale));
   const canvasH = Math.max(1, Math.ceil(boxH * dpiScale));
 
@@ -320,15 +377,6 @@ async function renderRichTextToHighResPng(
   ctx.scale(dpiScale, dpiScale);
   ctx.clearRect(0, 0, boxW, boxH);
 
-  const fontSize = opts.fontSize || 12;
-  const fontWeight = opts.fontWeight === 'bold' ? '700' : '400';
-  const fontStyle = opts.fontStyle === 'italic' ? 'italic' : 'normal';
-  const fontStack = getCssFontStack(opts.fontFamily);
-  const lineHeightMultiplier = opts.lineHeight || 1.25;
-  const lineHeightPx = fontSize * lineHeightMultiplier;
-  const letterSpacingPx = opts.letterSpacing || 0;
-  const textAlign = opts.textAlign || 'left';
-
   ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontStack}`;
   ctx.fillStyle = opts.color || '#111827';
   ctx.textBaseline = 'top';
@@ -337,38 +385,10 @@ async function renderRichTextToHighResPng(
     (ctx as unknown as { letterSpacing: string }).letterSpacing = `${letterSpacingPx}px`;
   }
 
-  // Word-wrap paragraphs to fit boxW
-  const paragraphs = opts.text.replace(/\r\n/g, '\n').split('\n');
-  const lines: string[] = [];
-  const maxLineWidth = Math.max(fontSize, boxW + 2);
-
-  for (const para of paragraphs) {
-    if (!para.trim()) {
-      lines.push('');
-      continue;
-    }
-    const words = para.split(/\s+/);
-    let currentLine = '';
-    for (const word of words) {
-      const candidate = currentLine ? `${currentLine} ${word}` : word;
-      const metrics = ctx.measureText(candidate);
-      if (metrics.width <= maxLineWidth || !currentLine) {
-        currentLine = candidate;
-      } else {
-        lines.push(currentLine);
-        currentLine = word;
-      }
-    }
-    if (currentLine) {
-      lines.push(currentLine);
-    }
-  }
-
-  const totalTextHeight = lines.length * lineHeightPx;
   const isCentered = !opts.text.includes('\n');
   const startY = isCentered
-    ? Math.max(0, (boxH - totalTextHeight) / 2)
-    : 0;
+    ? Math.max(verticalPadding, (boxH - totalTextHeight) / 2)
+    : verticalPadding;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -545,22 +565,7 @@ export async function applyModificationsAndExport(
 ): Promise<Uint8Array> {
   const srcPdfDoc = await PDFDocument.load(originalPdfBytes, { ignoreEncryption: true });
   const srcPageCount = srcPdfDoc.getPageCount();
-
-  // Determine whether document structure (page count, sequence, blank pages, inverted colors) is unchanged.
-  // When unchanged, modifying the source document in-place avoids document recreation, perfectly preserving
-  // 100% of the original PDF's catalog, metadata, page resources, xref table structure, fonts, and vector streams.
-  const canModifyInPlace = Boolean(
-    !pages ||
-    (pages.length === srcPageCount &&
-      pages.every(
-        (p, i) =>
-          p.originalPageIndex === i &&
-          !p.isBlankPage &&
-          !p.isColorInverted
-      ))
-  );
-
-  let targetPdfDoc: PDFDocument;
+  const originalPages = srcPdfDoc.getPages();
 
   // Lazily load pdf.js proxy only if needed for inverted pages and not already provided
   let localPdfDocProxy: pdfjsLib.PDFDocumentProxy | null = pdfDocProxy || null;
@@ -577,49 +582,37 @@ export async function applyModificationsAndExport(
     }
   };
 
-  if (canModifyInPlace) {
-    targetPdfDoc = srcPdfDoc;
+  const targetPdfDoc = srcPdfDoc;
+  let cleanOriginalBytes = originalPdfBytes;
 
-    if (pages) {
-      for (let i = 0; i < pages.length; i++) {
-        const pInfo = pages[i];
-        if (pInfo.rotation && pInfo.rotation % 360 !== 0) {
-          const page = targetPdfDoc.getPage(i);
-          const existingAngle = page.getRotation().angle || 0;
-          page.setRotation(degrees((existingAngle + pInfo.rotation) % 360));
+  if (pages) {
+    const isUnchanged =
+      pages.length === srcPageCount &&
+      pages.every(
+        (p, i) =>
+          p.originalPageIndex === i &&
+          !p.isBlankPage &&
+          !p.isColorInverted
+      );
+
+    if (!isUnchanged) {
+      // Reorganize pages directly in srcPdfDoc to preserve document catalog, bookmarks (outlines),
+      // AcroForm interactive form fields, metadata, internal page object refs (PDFRef), and annotations.
+      while (srcPdfDoc.getPageCount() > 0) {
+        srcPdfDoc.removePage(0);
+      }
+      (srcPdfDoc as any).pageCache?.invalidate?.();
+
+      let cleanCopyDoc: PDFDocument | null = null;
+      const getCleanCopyDoc = async () => {
+        if (!cleanCopyDoc) {
+          cleanCopyDoc = await PDFDocument.load(originalPdfBytes, { ignoreEncryption: true });
         }
-      }
-    }
-  } else {
-    targetPdfDoc = await PDFDocument.create();
+        return cleanCopyDoc;
+      };
 
-    // Preserve original document metadata across structural modifications
-    try {
-      const title = srcPdfDoc.getTitle();
-      if (title) targetPdfDoc.setTitle(title);
-      const author = srcPdfDoc.getAuthor();
-      if (author) targetPdfDoc.setAuthor(author);
-      const subject = srcPdfDoc.getSubject();
-      if (subject) targetPdfDoc.setSubject(subject);
-      const keywords = srcPdfDoc.getKeywords();
-      if (keywords) {
-        const kwArray = keywords.includes(',')
-          ? keywords.split(',').map((k) => k.trim()).filter(Boolean)
-          : keywords.split(/\s+/).filter(Boolean);
-        targetPdfDoc.setKeywords(kwArray);
-      }
-      const producer = srcPdfDoc.getProducer();
-      if (producer) targetPdfDoc.setProducer(producer);
-      const creator = srcPdfDoc.getCreator();
-      if (creator) targetPdfDoc.setCreator(creator);
-      const cDate = srcPdfDoc.getCreationDate();
-      if (cDate) targetPdfDoc.setCreationDate(cDate);
-      targetPdfDoc.setModificationDate(new Date());
-    } catch {
-      // Ignore metadata copy errors
-    }
+      const attachedOriginalIndices = new Set<number>();
 
-    if (pages) {
       for (let i = 0; i < pages.length; i++) {
         const pInfo = pages[i];
         const isBlank =
@@ -644,10 +637,9 @@ export async function applyModificationsAndExport(
             });
           }
         } else if (pInfo.isColorInverted) {
-          // Permanently invert page colors (background, text, images, vector graphics)
-          // using pdf.js for high-resolution rendering and pdf-lib for embedding at exact original page dimensions
-          const pageW = Math.max(50, pInfo.width || 595.28);
-          const pageH = Math.max(50, pInfo.height || 841.89);
+          const origPage = originalPages[pInfo.originalPageIndex!];
+          const pageW = Math.max(50, pInfo.width || (origPage ? origPage.getWidth() : 595.28));
+          const pageH = Math.max(50, pInfo.height || (origPage ? origPage.getHeight() : 841.89));
           const invertedPage = targetPdfDoc.addPage([pageW, pageH]);
 
           // Fill black fallback background first
@@ -679,13 +671,37 @@ export async function applyModificationsAndExport(
             }
           }
         } else {
-          const [copiedPage] = await targetPdfDoc.copyPages(srcPdfDoc, [pInfo.originalPageIndex!]);
-          const addedPage = targetPdfDoc.addPage(copiedPage);
-          if (pInfo.rotation && pInfo.rotation % 360 !== 0) {
-            const existingAngle = addedPage.getRotation().angle || 0;
-            addedPage.setRotation(degrees((existingAngle + pInfo.rotation) % 360));
+          const origIdx = pInfo.originalPageIndex!;
+          const origPage = originalPages[origIdx];
+          if (attachedOriginalIndices.has(origIdx)) {
+            // Duplicated page: copy from clean original doc
+            const cleanDoc = await getCleanCopyDoc();
+            const [copiedPage] = await targetPdfDoc.copyPages(cleanDoc, [origIdx]);
+            targetPdfDoc.addPage(copiedPage);
+          } else {
+            // First attachment: reuse exact page object to retain all bookmarks, links, forms & annots
+            attachedOriginalIndices.add(origIdx);
+            targetPdfDoc.addPage(origPage);
           }
         }
+      }
+      (targetPdfDoc as any).pageCache?.invalidate?.();
+
+      // Save a clean snapshot of the reordered pages (before overlays) to serve as round-trip base bytes
+      try {
+        cleanOriginalBytes = await targetPdfDoc.save();
+      } catch {
+        cleanOriginalBytes = originalPdfBytes;
+      }
+    }
+
+    // Apply rotation deltas
+    for (let i = 0; i < pages.length; i++) {
+      const pInfo = pages[i];
+      if (pInfo.rotation && pInfo.rotation % 360 !== 0) {
+        const page = targetPdfDoc.getPage(i);
+        const existingAngle = page.getRotation().angle || 0;
+        page.setRotation(degrees((existingAngle + pInfo.rotation) % 360));
       }
     }
   }
@@ -1105,9 +1121,8 @@ export async function applyModificationsAndExport(
 
   // Embed full PDF Forge Editor State and base document bytes for 100% lossless re-editing upon reopening
   try {
-    let cleanOriginalBytes = originalPdfBytes;
     try {
-      const checkDoc = await PDFDocument.load(originalPdfBytes, { ignoreEncryption: true });
+      const checkDoc = await PDFDocument.load(cleanOriginalBytes, { ignoreEncryption: true });
       const existingBaseRef = checkDoc.catalog.get(PDFName.of('PDFForgeBaseBytes'));
       if (existingBaseRef) {
         const existingBaseObj = checkDoc.context.lookup(existingBaseRef);
@@ -1132,18 +1147,20 @@ export async function applyModificationsAndExport(
                 }
               }
             } catch {
-              // Fall back to originalPdfBytes
+              // Fall back to cleanOriginalBytes
             }
           }
         }
       }
     } catch {
-      // Use originalPdfBytes as clean base
+      // Use cleanOriginalBytes as clean base
     }
 
     const cleanPages = pages
-      ? pages.map((p) => ({
+      ? pages.map((p, idx) => ({
           ...p,
+          pageIndex: idx,
+          pageNumber: idx + 1,
           thumbnailDataUrl: undefined,
         }))
       : undefined;
@@ -1271,20 +1288,24 @@ export function downloadPdf(bytes: Uint8Array, filename = 'document.pdf'): void 
 export interface SaveFilePickerResult {
   saved: boolean;
   cancelled?: boolean;
+  needsSaveAs?: boolean;
   filename: string;
   fileHandle?: unknown;
+  filePath?: string | null;
 }
 
 /**
- * Saves PDF bytes using the native OS File System Access API (`showSaveFilePicker`)
- * when supported and permitted, or writes to an existing FileSystemFileHandle,
- * falling back cleanly to `downloadPdf` with the exact target filename when running in a sandboxed frame.
+ * Saves PDF bytes directly to the native file path (via Tauri IPC) or to an existing
+ * FileSystemFileHandle, updating the opened PDF in-place.
+ * For Save As or when no destination is linked, prompts with showSaveFilePicker.
+ * Never automatically saves or downloads to the Downloads folder.
  */
 export async function savePdfToDestination(
   bytes: Uint8Array,
   suggestedName: string,
   options?: {
     existingHandle?: unknown;
+    existingPath?: string | null;
     forceSystemPicker?: boolean;
   }
 ): Promise<SaveFilePickerResult> {
@@ -1294,7 +1315,32 @@ export async function savePdfToDestination(
       : `${suggestedName.trim()}.pdf`
     : 'document.pdf';
 
-  // 1. If we already have a writable handle and aren't forcing "Save As" picker:
+  // 1. If we have a native file path and aren't forcing "Save As", write directly via Tauri IPC
+  if (!options?.forceSystemPicker && options?.existingPath) {
+    try {
+      const isTauri =
+        typeof window !== 'undefined' &&
+        ('__TAURI__' in window || '__TAURI_INTERNALS__' in window);
+      if (isTauri) {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('write_pdf_file', {
+          path: options.existingPath,
+          data: Array.from(bytes),
+        });
+        const name = options.existingPath.split(/[\\/]/).pop() || safeName;
+        return {
+          saved: true,
+          filename: name,
+          filePath: options.existingPath,
+          fileHandle: options?.existingHandle,
+        };
+      }
+    } catch {
+      // Fall through to file handle or picker
+    }
+  }
+
+  // 2. If we already have a writable handle and aren't forcing "Save As" picker:
   if (
     options?.existingHandle &&
     !options.forceSystemPicker &&
@@ -1315,18 +1361,15 @@ export async function savePdfToDestination(
         saved: true,
         filename: handle.name || safeName,
         fileHandle: options.existingHandle,
+        filePath: options?.existingPath || undefined,
       };
     } catch {
-      // Fall through to picker / download if permission expired
+      // Fall through to picker
     }
   }
 
-  // 2. If native showSaveFilePicker is requested and available in window:
-  if (
-    options?.forceSystemPicker &&
-    typeof window !== 'undefined' &&
-    'showSaveFilePicker' in window
-  ) {
+  // 3. If native showSaveFilePicker is available (for Save As or first-time save):
+  if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
     try {
       const showPicker = (window as unknown as {
         showSaveFilePicker: (opts: unknown) => Promise<{
@@ -1335,6 +1378,7 @@ export async function savePdfToDestination(
             write: (data: Blob) => Promise<void>;
             close: () => Promise<void>;
           }>;
+          getFile?: () => Promise<File>;
         }>;
       }).showSaveFilePicker;
 
@@ -1352,10 +1396,21 @@ export async function savePdfToDestination(
       await writable.write(new Blob([new Uint8Array(bytes)], { type: 'application/pdf' }));
       await writable.close();
 
+      let detectedPath: string | null = null;
+      if (typeof handle.getFile === 'function') {
+        try {
+          const f = await handle.getFile();
+          detectedPath = (f as any).path || null;
+        } catch {
+          // ignore
+        }
+      }
+
       return {
         saved: true,
         filename: handle.name || safeName,
         fileHandle: handle,
+        filePath: detectedPath || options?.existingPath || undefined,
       };
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -1365,14 +1420,34 @@ export async function savePdfToDestination(
           filename: safeName,
         };
       }
-      // SecurityError in cross-origin iframe falls through to direct download with chosen filename
     }
   }
 
-  // 3. Standard browser / iframe save with preserved filename
-  downloadPdf(bytes, safeName);
+  // 4. In desktop Tauri or sandboxed context without showSaveFilePicker:
+  // If an existing path was known, attempt Tauri invoke write as fallback
+  if (options?.existingPath) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('write_pdf_file', {
+        path: options.existingPath,
+        data: Array.from(bytes),
+      });
+      const name = options.existingPath.split(/[\\/]/).pop() || safeName;
+      return {
+        saved: true,
+        filename: name,
+        filePath: options.existingPath,
+      };
+    } catch {
+      // ignore
+    }
+  }
+
+  // Never automatically save to Downloads folder!
+  // Return saved: false with needsSaveAs: true so UI can prompt user with Save As dialog
   return {
-    saved: true,
+    saved: false,
+    needsSaveAs: true,
     filename: safeName,
   };
 }

@@ -9,6 +9,7 @@ import {
 } from '../types/pdf';
 import { generateObjectSignature } from '../utils/objectMatching';
 import { getCssFontStack } from '../utils/pdfModifier';
+import { FontPicker } from './FontPicker';
 import {
   X,
   CheckSquare,
@@ -522,24 +523,10 @@ export const SameObjectModal: React.FC<SameObjectModalProps> = ({
                   <div className="grid grid-cols-3 gap-2.5">
                     <div>
                       <span className="text-[10px] text-neutral-400 block mb-1">Font Family</span>
-                      <select
+                      <FontPicker
                         value={fontFamily}
-                        onChange={(e) => setFontFamily(e.target.value)}
-                        className="w-full bg-[#161616] border border-[#383838] rounded-lg px-2 py-1.5 text-xs text-neutral-200 outline-none cursor-pointer"
-                      >
-                        <optgroup label="Standard Fonts">
-                          <option value="sans-serif">Sans-Serif</option>
-                          <option value="serif">Serif</option>
-                          <option value="monospace">Monospace</option>
-                        </optgroup>
-                        <optgroup label="Bengali Fonts">
-                          <option value="SolaimanLipi">SolaimanLipi</option>
-                          <option value="Kalpurush">Kalpurush</option>
-                          <option value="Nikosh">Nikosh</option>
-                          <option value="Siyam Rupali">Siyam Rupali</option>
-                          <option value="Noto Sans Bengali">Noto Sans Bengali</option>
-                        </optgroup>
-                      </select>
+                        onChange={setFontFamily}
+                      />
                     </div>
 
                     <div>

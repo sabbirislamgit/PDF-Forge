@@ -236,3 +236,53 @@ test('applyHeaderFooterToPdf: accurately positions on rotated pages (90° orient
   // With 270° rotation, a ~ 0 and b < 0 (or b = -9)
   assert.ok(Math.abs(a) < 0.01, 'Text transform rotation matches 270° for 90° page rotation');
 });
+
+test('applyHeaderFooterToPdf: clears stale base state and remains permanently after reopening', async () => {
+  const { PDFName } = await import('pdf-lib');
+  const doc = await PDFDocument.create();
+  doc.addPage([500, 700]).drawText('Original Base Page', { x: 50, y: 500, size: 14 });
+
+  // Simulate existing PDF Forge state in source document
+  const fakeBaseStream = doc.context.flateStream('FAKE_OLD_BASE');
+  doc.catalog.set(PDFName.of('PDFForgeBaseBytes'), doc.context.register(fakeBaseStream));
+  doc.catalog.set(PDFName.of('PDFForgeState'), doc.context.register(doc.context.flateStream('{}')));
+  const originalBytes = await doc.save();
+
+  const pages: PageInfo[] = [
+    { id: '1', pageIndex: 0, pageNumber: 1, width: 500, height: 700, originalPageIndex: 0 },
+  ];
+
+  const config: HeaderFooterConfig = {
+    headerLeft: 'CONFIDENTIAL',
+    headerCenter: '',
+    headerRight: '2026',
+    footerLeft: '',
+    footerCenter: 'Page {page} of {total}',
+    footerRight: '',
+    fontFamily: 'Inter',
+    fontSize: 10,
+    fontWeight: 'normal',
+    color: '#000000',
+    marginTop: 20,
+    marginBottom: 20,
+    marginX: 36,
+    scope: 'all',
+  };
+
+  const modifiedBytes = await applyHeaderFooterToPdf(originalBytes, pages, config, 0, 'Test.pdf');
+
+  // Verify stale base bytes catalog was cleared so it never reverts
+  const reloadedDoc = await PDFDocument.load(modifiedBytes);
+  assert.equal(reloadedDoc.catalog.has(PDFName.of('PDFForgeBaseBytes')), false);
+
+  // Verify headers and footers are permanently present upon reloading
+  const reloadedPdfJs = await pdfjsLib.getDocument({ data: modifiedBytes }).promise;
+  const p1 = await reloadedPdfJs.getPage(1);
+  const tc = await p1.getTextContent();
+  const strings = tc.items.map((it: any) => it.str);
+
+  assert.ok(strings.includes('CONFIDENTIAL'));
+  assert.ok(strings.includes('2026'));
+  assert.ok(strings.includes('Page 1 of 1'));
+  assert.ok(strings.includes('Original Base Page'));
+});

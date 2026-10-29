@@ -345,3 +345,125 @@ test('saving reordered PDF preserves page order and dimensions on export and reo
   assert.equal(restored.modifications[0].pastedObjects.length, 1);
   assert.equal(restored.modifications[0].pastedObjects[0].text, 'Pasted Note on Section 3');
 });
+
+test('reordering pages preserves bookmarks (outlines), AcroForm forms, and metadata attached to correct pages', async () => {
+  const { PDFName, StandardFonts } = await import('pdf-lib');
+
+  // 1. Create document with metadata, bookmarks (outlines), and an AcroForm text field
+  const doc = await PDFDocument.create();
+  doc.setTitle('Production Test Doc');
+  doc.setAuthor('Antigravity');
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+
+  const p1 = doc.addPage([200, 200]);
+  p1.drawText('Page 1 Content', { x: 20, y: 150, font, size: 12 });
+
+  const p2 = doc.addPage([300, 300]);
+  p2.drawText('Page 2 Content', { x: 20, y: 250, font, size: 12 });
+
+  const p3 = doc.addPage([400, 400]);
+  p3.drawText('Page 3 Content', { x: 20, y: 350, font, size: 12 });
+
+  // Add AcroForm field on Page 2
+  const form = doc.getForm();
+  const textField = form.createTextField('userSignature');
+  textField.setText('Signed Field');
+  textField.addToPage(p2, { x: 20, y: 100, width: 120, height: 25 });
+
+  // Add bookmark pointing to Page 2
+  const outlineItem = doc.context.obj({
+    Title: 'Go To Section 2',
+    Dest: [p2.ref, 'XYZ', null, null, null],
+  });
+  const itemRef = doc.context.register(outlineItem);
+  const outlinesDict = doc.context.obj({
+    Type: 'Outlines',
+    First: itemRef,
+    Last: itemRef,
+    Count: 1,
+  });
+  doc.catalog.set(PDFName.of('Outlines'), doc.context.register(outlinesDict));
+
+  const origBytes = await doc.save();
+
+  // 2. Reorder pages: Move Page 2 (original index 1) to first position (index 0): [P2, P1, P3]
+  const reordered: PageInfo[] = [
+    { id: 'p-2', pageIndex: 0, pageNumber: 1, width: 300, height: 300, originalPageIndex: 1 },
+    { id: 'p-1', pageIndex: 1, pageNumber: 2, width: 200, height: 200, originalPageIndex: 0 },
+    { id: 'p-3', pageIndex: 2, pageNumber: 3, width: 400, height: 400, originalPageIndex: 2 },
+  ];
+
+  const exported = await applyModificationsAndExport(origBytes, {}, new Map(), reordered);
+
+  // 3. Verify in reloaded document:
+  const reloaded = await PDFDocument.load(exported);
+  assert.equal(reloaded.getPageCount(), 3);
+
+  // Page 0 should now be original Page 2 (width 300)
+  assert.equal(reloaded.getPage(0).getWidth(), 300);
+  // Page 1 should now be original Page 1 (width 200)
+  assert.equal(reloaded.getPage(1).getWidth(), 200);
+  // Page 2 should now be original Page 3 (width 400)
+  assert.equal(reloaded.getPage(2).getWidth(), 400);
+
+  // Metadata preserved
+  assert.equal(reloaded.getTitle(), 'Production Test Doc');
+  assert.equal(reloaded.getAuthor(), 'Antigravity');
+
+  // Bookmarks (Outlines) preserved
+  assert.equal(reloaded.catalog.has(PDFName.of('Outlines')), true);
+  const outlineCatalog = reloaded.catalog.lookup(PDFName.of('Outlines'));
+  const firstOutline = reloaded.context.lookup((outlineCatalog as any).get(PDFName.of('First')));
+  const bookmarkDest = (firstOutline as any).get(PDFName.of('Dest'));
+  const targetPageRef = bookmarkDest.get(0).toString();
+  // Bookmark still points to original Page 2 which is now at index 0!
+  assert.equal(targetPageRef, reloaded.getPage(0).ref.toString());
+
+  // AcroForm interactive form fields preserved
+  assert.equal(reloaded.catalog.has(PDFName.of('AcroForm')), true);
+  const reloadedForm = reloaded.getForm();
+  const fields = reloadedForm.getFields();
+  assert.equal(fields.length, 1);
+  assert.equal(fields[0].getName(), 'userSignature');
+});
+
+test('savePdfToDestination directly updates existing file handle or path without saving to Downloads', async () => {
+  const { savePdfToDestination } = await import('./pdfModifier');
+
+  const dummyBytes = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55]); // %PDF-1.7
+  let writtenData: Blob | null = null;
+  let isClosed = false;
+
+  const mockFileHandle = {
+    name: 'contract.pdf',
+    createWritable: async () => ({
+      write: async (data: Blob) => {
+        writtenData = data;
+      },
+      close: async () => {
+        isClosed = true;
+      },
+    }),
+  };
+
+  // 1. Save with existingHandle directly overwrites the handle
+  const result = await savePdfToDestination(dummyBytes, 'contract.pdf', {
+    existingHandle: mockFileHandle,
+    forceSystemPicker: false,
+  });
+
+  assert.equal(result.saved, true);
+  assert.equal(result.filename, 'contract.pdf');
+  assert.ok(writtenData);
+  assert.equal(isClosed, true);
+
+  // 2. When no handle or path is linked and showSaveFilePicker is unavailable,
+  // it must NEVER save to Downloads; it returns needsSaveAs: true so UI prompts Save As
+  const fallbackResult = await savePdfToDestination(dummyBytes, 'untitled.pdf', {
+    existingHandle: null,
+    forceSystemPicker: false,
+  });
+
+  assert.equal(fallbackResult.saved, false);
+  assert.equal(fallbackResult.needsSaveAs, true);
+});

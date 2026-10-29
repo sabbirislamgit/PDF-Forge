@@ -16,6 +16,7 @@ import {
   FontWeight,
 } from '../types/pdf';
 import { getCssFontStack } from '../utils/pdfModifier';
+import { FontPicker } from './FontPicker';
 
 interface WatermarkModalProps {
   isOpen: boolean;
@@ -226,17 +227,10 @@ export const WatermarkModal: React.FC<WatermarkModalProps> = ({
                     <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
                       Font Family
                     </label>
-                    <select
+                    <FontPicker
                       value={fontFamily}
-                      onChange={(e) => setFontFamily(e.target.value)}
-                      className="w-full bg-[#141414] border border-[#383838] rounded-lg px-2.5 py-2 text-xs text-white outline-none"
-                    >
-                      {FONT_OPTIONS.map((f) => (
-                        <option key={f.value} value={f.value} className="bg-[#1e1e1e]">
-                          {f.label}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={setFontFamily}
+                    />
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">

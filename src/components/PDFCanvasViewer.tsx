@@ -37,6 +37,7 @@ import {
   normalizeRect,
 } from '../utils/selectionUtils';
 import { getCssFontStack } from '../utils/pdfModifier';
+import { calculateTextBoxMetrics } from '../utils/textEngine';
 import { invertCanvasPixels } from '../utils/pdfColorInverter';
 import { ToolMode } from './Header';
 
@@ -942,9 +943,33 @@ const PageItemComponent: React.FC<PageItemProps> = ({
                   ref={inlineTextareaRef}
                   value={obj.text ?? ''}
                   onChange={(e) => {
+                    const nextText = e.target.value;
+                    const metrics = calculateTextBoxMetrics(
+                      nextText,
+                      obj.fontSize || 12,
+                      obj.fontFamily
+                    );
+                    const currentW = obj.bounds.width;
+                    const currentH = obj.bounds.height;
+                    const newW = Math.max(currentW, metrics.width);
+                    const newH = Math.max(currentH, metrics.height);
+                    const boundsUpdated = newW !== currentW || newH !== currentH;
+
                     onUpdateTextObject?.(
                       obj.id,
-                      { text: e.target.value },
+                      {
+                        text: nextText,
+                        ...(boundsUpdated
+                          ? {
+                              bounds: {
+                                ...obj.bounds,
+                                y: obj.bounds.y - (newH - currentH),
+                                width: newW,
+                                height: newH,
+                              },
+                            }
+                          : {}),
+                      },
                       pageInfo.pageIndex,
                       false
                     );
@@ -992,7 +1017,7 @@ const PageItemComponent: React.FC<PageItemProps> = ({
               {/* 3. Rendered Text Content for Edited, Moved, Resized, OCR, Watermark, Page Number, or Header/Footer Text Objects */}
               {obj.isNew && obj.type === 'text' && !isEditingThisText && (
                 <div
-                  className="w-full h-full pointer-events-none select-none whitespace-pre-wrap break-words overflow-hidden flex"
+                  className="w-full min-h-full pointer-events-none select-none whitespace-pre-wrap break-words overflow-visible flex"
                   style={{
                     fontSize: `${scaledFontSize}px`,
                     fontFamily: getCssFontFamily(obj.fontFamily),
@@ -1884,8 +1909,10 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
       const vpX = Math.max(0, Math.min(e.clientX - rect.left, rect.width - 20));
       const vpY = Math.max(0, Math.min(e.clientY - rect.top, rect.height - 20));
 
-      const defaultWidthPt = 160;
-      const defaultHeightPt = Math.max(24, Math.round(textToolFontSize * 1.8));
+      const initialText = 'New Text';
+      const metrics = calculateTextBoxMetrics(initialText, textToolFontSize, 'Helvetica');
+      const defaultWidthPt = metrics.width;
+      const defaultHeightPt = metrics.height;
       const vpRect: ViewportRect = {
         x: vpX,
         y: Math.max(0, vpY - (defaultHeightPt * zoom) / 2),
@@ -1904,7 +1931,7 @@ export const PDFCanvasViewer: React.FC<PDFCanvasViewerProps> = ({
         pageIndex,
         type: 'text',
         bounds: pdfBounds,
-        text: 'New Text',
+        text: initialText,
         fontSize: textToolFontSize,
         fontFamily: 'Helvetica',
         fontWeight: 'normal',

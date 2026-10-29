@@ -75,6 +75,7 @@ interface HeaderProps {
   onRemoveSameObject?: () => void;
   onReplaceSameObject?: () => void;
   onRemoveEverywhere: () => void;
+  onOpenFile?: () => void;
   onFileSelected: (file: File) => void;
   onExport: () => void;
   onOpenShortcuts: () => void;
@@ -132,6 +133,7 @@ const HeaderComponent: React.FC<HeaderProps> = ({
   onRemoveSameObject,
   onReplaceSameObject,
   onRemoveEverywhere,
+  onOpenFile,
   onFileSelected,
   onExport,
   onOpenShortcuts,
@@ -1091,7 +1093,8 @@ const HeaderComponent: React.FC<HeaderProps> = ({
                     type="button"
                     onClick={() => {
                       setIsMoreMenuOpen(false);
-                      fileInputRef.current?.click();
+                      if (onOpenFile) onOpenFile();
+                      else fileInputRef.current?.click();
                     }}
                     className="w-full px-3 py-2 text-xs text-left text-neutral-200 hover:bg-[#282a30] flex items-center gap-2 cursor-pointer"
                   >
@@ -1141,7 +1144,7 @@ const HeaderComponent: React.FC<HeaderProps> = ({
         </button>
 
         <button
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => (onOpenFile ? onOpenFile() : fileInputRef.current?.click())}
           disabled={isProcessing}
           aria-label="Upload PDF"
           className={`${

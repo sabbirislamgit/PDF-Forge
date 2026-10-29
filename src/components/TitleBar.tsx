@@ -105,6 +105,7 @@ export interface TitleBarProps {
   onRemoveSameObject?: () => void;
   onReplaceSameObject?: () => void;
   onRemoveEverywhere?: () => void;
+  onOpenFile?: () => void;
   onFileSelected?: (file: File) => void;
   onSave?: () => void;
   onSaveAs?: () => void;
@@ -191,6 +192,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onFindSameObject,
   onHighlightSameObjectMatches,
   onReplaceSameObject,
+  onOpenFile,
   onFileSelected,
   onSave,
   onSaveAs,
@@ -894,7 +896,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => (onOpenFile ? onOpenFile() : fileInputRef.current?.click())}
                   className="h-[62px] min-w-[54px] max-w-[66px] px-2 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 transition-colors text-zinc-200 hover:text-white"
                   title="Open PDF Document"
                 >
@@ -991,7 +993,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               <div className="flex items-center gap-0.5">
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => (onOpenFile ? onOpenFile() : fileInputRef.current?.click())}
                   className="h-[62px] min-w-[50px] sm:min-w-[54px] px-1.5 flex flex-col items-center justify-center rounded-[4px] hover:bg-zinc-700/60 active:bg-zinc-700 transition-colors text-zinc-200 hover:text-white"
                   title="Open PDF File"
                 >

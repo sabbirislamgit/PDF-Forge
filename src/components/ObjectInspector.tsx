@@ -9,6 +9,7 @@ import {
 import { ToolMode } from './Header';
 import { TextObjectUpdates } from './PDFCanvasViewer';
 import { getCssFontStack } from '../utils/pdfModifier';
+import { FontPicker } from './FontPicker';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import {
   Copy,
@@ -402,31 +403,17 @@ const ObjectInspectorComponent: React.FC<ObjectInspectorProps> = ({
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <span className="text-[10px] text-neutral-400 block mb-1">Font Family</span>
-                      <select
-                        value={resolveSelectedFontValue(selectedObject.fontFamily)}
-                        onChange={(e) => {
+                      <FontPicker
+                        value={selectedObject.fontFamily}
+                        onChange={(newFont) => {
                           onUpdateTextObject?.(
                             selectedObject.id,
-                            { fontFamily: e.target.value },
+                            { fontFamily: newFont },
                             selectedObject.pageIndex,
                             true
                           );
                         }}
-                        className="w-full bg-[#1a1a1a] border border-[#343434] rounded-lg px-2 py-1.5 text-xs text-neutral-200 outline-none cursor-pointer"
-                      >
-                        <optgroup label="Standard Fonts">
-                          <option value="sans-serif">Sans-Serif (Helvetica)</option>
-                          <option value="serif">Serif (Times)</option>
-                          <option value="monospace">Monospace (Courier)</option>
-                        </optgroup>
-                        <optgroup label="Bengali Fonts">
-                          <option value="SolaimanLipi">SolaimanLipi</option>
-                          <option value="Kalpurush">Kalpurush</option>
-                          <option value="Nikosh">Nikosh</option>
-                          <option value="Siyam Rupali">Siyam Rupali</option>
-                          <option value="Noto Sans Bengali">Noto Sans</option>
-                        </optgroup>
-                      </select>
+                      />
                     </div>
 
                     <div>

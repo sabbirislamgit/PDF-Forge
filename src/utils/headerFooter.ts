@@ -1,11 +1,13 @@
 import {
   PDFDocument,
   PDFFont,
+  PDFName,
   StandardFonts,
   degrees,
   rgb,
 } from 'pdf-lib';
 import { HeaderFooterConfig, PageInfo, FontWeight, FontStyle, TextAlign } from '../types/pdf';
+import { getCssFontStack } from './pdfModifier';
 
 /**
  * Parses a hex color string (e.g. '#475569') into pdf-lib rgb(r, g, b).
@@ -152,7 +154,7 @@ export async function getStandardPdfFont(
 }
 
 /**
- * Renders Unicode / complex script text (e.g. Bengali) to high-resolution PNG using HTML Canvas.
+ * Renders Unicode / complex script text (e.g. Bengali, Arabic, CJK, custom fonts) to high-resolution PNG using HTML Canvas.
  */
 function renderComplexScriptToPng(
   text: string,
@@ -164,28 +166,25 @@ function renderComplexScriptToPng(
   if (typeof document === 'undefined') return null;
 
   try {
-    const scale = 4.0; // 288 DPI
+    const scale = 5.0; // 360 DPI for ultra-sharp header/footer print quality
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    const fontStack = fontFamily.includes('Bengali') || fontFamily.includes('Solaiman')
-      ? `"${fontFamily}", "Noto Sans Bengali", "SolaimanLipi", sans-serif`
-      : `"${fontFamily}", sans-serif`;
-
+    const fontStack = getCssFontStack(fontFamily);
     const weight = fontWeight === 'bold' ? 'bold' : 'normal';
     ctx.font = `${weight} ${fontSize * scale}px ${fontStack}`;
     const metrics = ctx.measureText(text);
     const textW = Math.ceil(metrics.width);
-    const textH = Math.ceil(fontSize * scale * 1.5);
+    const textH = Math.ceil(fontSize * scale * 1.8);
 
-    canvas.width = Math.max(1, textW + 8);
-    canvas.height = Math.max(1, textH + 8);
+    canvas.width = Math.max(1, textW + 16);
+    canvas.height = Math.max(1, textH + 16);
 
     ctx.font = `${weight} ${fontSize * scale}px ${fontStack}`;
     ctx.fillStyle = colorHex || '#475569';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, 4, canvas.height / 2);
+    ctx.fillText(text, 8, canvas.height / 2);
 
     const dataUrl = canvas.toDataURL('image/png');
     canvas.width = 0;
@@ -227,6 +226,14 @@ export async function applyHeaderFooterToPdf(
   const pdfDoc = await PDFDocument.load(sourcePdfBytes, { ignoreEncryption: true });
   const totalPages = pdfDoc.getPageCount();
   if (totalPages === 0) return sourcePdfBytes;
+
+  // Clear stale embedded state metadata so modifiedBytes becomes the new permanent base
+  try {
+    pdfDoc.catalog.delete(PDFName.of('PDFForgeBaseBytes'));
+    pdfDoc.catalog.delete(PDFName.of('PDFForgeState'));
+  } catch {
+    // ignore
+  }
 
   const targetIndices: number[] =
     config.scope === 'current'
@@ -280,11 +287,21 @@ export async function applyHeaderFooterToPdf(
       );
       if (!resolvedText) continue;
 
-      // Check if text contains complex non-WinAnsi characters (e.g. Bengali)
+      // Check if text contains complex non-WinAnsi characters or custom/system fonts
+      const famClean = (config.fontFamily || '').toLowerCase().replace(/["']/g, '').trim();
+      const isBuiltInStd = [
+        'helvetica',
+        'times',
+        'times-roman',
+        'times new roman',
+        'courier',
+        'courier new',
+        'sans-serif',
+        'serif',
+        'monospace',
+      ].includes(famClean);
       const isComplexScript =
-        /[^\x09\x0A\x0D\x20-\xFF]/.test(resolvedText) ||
-        config.fontFamily.toLowerCase().includes('bengali') ||
-        config.fontFamily.toLowerCase().includes('solaiman');
+        /[^\x09\x0A\x0D\x20-\xFF]/.test(resolvedText) || !isBuiltInStd;
 
       if (isComplexScript && typeof document !== 'undefined') {
         const pngUrl = renderComplexScriptToPng(
@@ -298,8 +315,8 @@ export async function applyHeaderFooterToPdf(
           try {
             const pngBytes = dataUrlToBytes(pngUrl);
             const embeddedPng = await pdfDoc.embedPng(pngBytes);
-            const imgW = embeddedPng.width / 4.0;
-            const imgH = embeddedPng.height / 4.0;
+            const imgW = embeddedPng.width / 5.0;
+            const imgH = embeddedPng.height / 5.0;
 
             let visX = marginX;
             if (slot.align === 'center') {

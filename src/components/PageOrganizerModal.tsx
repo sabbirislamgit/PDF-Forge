@@ -66,14 +66,15 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [lastSelectedIdx, setLastSelectedIdx] = useState<number | null>(null);
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
-  const [dropTarget, setDropTarget] = useState<{ index: number; position: 'before' | 'after' } | null>(null);
+  const [hoverSlotIndex, setHoverSlotIndex] = useState<number | null>(null);
   const [dragPointerPos, setDragPointerPos] = useState<{ x: number; y: number } | null>(null);
   const [thumbnailZoom, setThumbnailZoom] = useState<'sm' | 'md' | 'lg'>('md');
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Synchronous refs for smooth, responsive drag-and-drop & auto-scrolling
   const draggedIdxRef = useRef<number | null>(null);
-  const dropTargetRef = useRef<{ index: number; position: 'before' | 'after' } | null>(null);
+  const hoverSlotIndexRef = useRef<number | null>(null);
+  const currentPointerPosRef = useRef<{ x: number; y: number } | null>(null);
   const pointerDownRef = useRef<{
     startX: number;
     startY: number;
@@ -94,11 +95,76 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
     scrollSpeedRef.current = 0;
   }, []);
 
+  const updateHoverSlot = useCallback(
+    (clientX: number, clientY: number) => {
+      const container = scrollContainerRef.current;
+      if (!container || draggedIdxRef.current === null) return;
+
+      const cards = Array.from(
+        container.querySelectorAll<HTMLElement>('[data-organizer-card-slot]')
+      );
+      if (cards.length === 0) return;
+
+      // 1. Direct hit-test against card slots
+      for (const card of cards) {
+        const r = card.getBoundingClientRect();
+        if (
+          clientX >= r.left &&
+          clientX <= r.right &&
+          clientY >= r.top &&
+          clientY <= r.bottom
+        ) {
+          const slot = Number(card.getAttribute('data-organizer-card-slot'));
+          if (!Number.isNaN(slot) && slot >= 0 && slot < pages.length) {
+            if (hoverSlotIndexRef.current !== slot) {
+              hoverSlotIndexRef.current = slot;
+              setHoverSlotIndex(slot);
+            }
+            return;
+          }
+        }
+      }
+
+      // 2. Proximity check if between cards or past edges
+      let closestSlot = hoverSlotIndexRef.current ?? draggedIdxRef.current;
+      let minDistSq = Infinity;
+      for (const card of cards) {
+        const r = card.getBoundingClientRect();
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        const distSq = (clientX - cx) ** 2 + (clientY - cy) ** 2;
+        if (distSq < minDistSq) {
+          minDistSq = distSq;
+          closestSlot = Number(card.getAttribute('data-organizer-card-slot'));
+        }
+      }
+
+      if (
+        closestSlot !== null &&
+        !Number.isNaN(closestSlot) &&
+        closestSlot >= 0 &&
+        closestSlot < pages.length
+      ) {
+        if (hoverSlotIndexRef.current !== closestSlot) {
+          hoverSlotIndexRef.current = closestSlot;
+          setHoverSlotIndex(closestSlot);
+        }
+      }
+    },
+    [pages.length]
+  );
+
   const startAutoScroll = useCallback(() => {
     if (autoScrollRafRef.current === null) {
       const step = () => {
         if (scrollSpeedRef.current !== 0 && scrollContainerRef.current) {
           scrollContainerRef.current.scrollTop += scrollSpeedRef.current;
+          if (currentPointerPosRef.current) {
+            updateHoverSlot(
+              currentPointerPosRef.current.x,
+              currentPointerPosRef.current.y
+            );
+          }
           autoScrollRafRef.current = requestAnimationFrame(step);
         } else {
           autoScrollRafRef.current = null;
@@ -106,7 +172,7 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
       };
       autoScrollRafRef.current = requestAnimationFrame(step);
     }
-  }, []);
+  }, [updateHoverSlot]);
 
   useEffect(() => {
     return () => {
@@ -208,6 +274,8 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
       const info = pointerDownRef.current;
       if (!info) return;
 
+      currentPointerPosRef.current = { x: e.clientX, y: e.clientY };
+
       const dx = e.clientX - info.startX;
       const dy = e.clientY - info.startY;
 
@@ -216,7 +284,9 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
           info.isDragging = true;
           const currentIdx = info.sourceIdx;
           draggedIdxRef.current = currentIdx;
+          hoverSlotIndexRef.current = currentIdx;
           setDraggedIdx(currentIdx);
+          setHoverSlotIndex(currentIdx);
           setDragPointerPos({ x: e.clientX, y: e.clientY });
 
           if (!selectedIndicesRef.current.has(currentIdx)) {
@@ -233,59 +303,23 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
         const container = scrollContainerRef.current;
         if (container) {
           const rect = container.getBoundingClientRect();
-          const topThreshold = rect.top + 70;
-          const bottomThreshold = rect.bottom - 70;
+          const topThreshold = rect.top + 80;
+          const bottomThreshold = rect.bottom - 80;
 
           if (e.clientY < topThreshold) {
-            const intensity = Math.min(1, Math.max(0, (topThreshold - e.clientY) / 70));
-            scrollSpeedRef.current = -Math.round(4 + intensity * 20);
+            const intensity = Math.min(1, Math.max(0, (topThreshold - e.clientY) / 80));
+            scrollSpeedRef.current = -Math.round(4 + intensity * 24);
             startAutoScroll();
           } else if (e.clientY > bottomThreshold) {
-            const intensity = Math.min(1, Math.max(0, (e.clientY - bottomThreshold) / 70));
-            scrollSpeedRef.current = Math.round(4 + intensity * 20);
+            const intensity = Math.min(1, Math.max(0, (e.clientY - bottomThreshold) / 80));
+            scrollSpeedRef.current = Math.round(4 + intensity * 24);
             startAutoScroll();
           } else {
             stopAutoScroll();
           }
         }
 
-        // Calculate insertion indicator position from card under cursor
-        const elements = document.elementsFromPoint(e.clientX, e.clientY);
-        let card: Element | null = null;
-        for (const el of elements) {
-          const match = el.closest('[data-organizer-card-idx]');
-          if (match) {
-            card = match;
-            break;
-          }
-        }
-
-        const fromIdx = draggedIdxRef.current;
-        if (card && fromIdx !== null) {
-          const targetIdx = Number(card.getAttribute('data-organizer-card-idx'));
-          if (!Number.isNaN(targetIdx) && targetIdx >= 0 && targetIdx < pages.length) {
-            const cardRect = card.getBoundingClientRect();
-            const isAfter = e.clientX - cardRect.left > cardRect.width / 2;
-
-            if (targetIdx === fromIdx) {
-              setDropTarget(null);
-              dropTargetRef.current = null;
-            } else if (targetIdx === fromIdx - 1 && isAfter) {
-              setDropTarget(null);
-              dropTargetRef.current = null;
-            } else if (targetIdx === fromIdx + 1 && !isAfter) {
-              setDropTarget(null);
-              dropTargetRef.current = null;
-            } else {
-              const nextDrop = {
-                index: targetIdx,
-                position: isAfter ? ('after' as const) : ('before' as const),
-              };
-              setDropTarget(nextDrop);
-              dropTargetRef.current = nextDrop;
-            }
-          }
-        }
+        updateHoverSlot(e.clientX, e.clientY);
       }
     };
 
@@ -296,33 +330,26 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
 
       const wasDragging = info.isDragging;
       const sourceIdx = info.sourceIdx;
-      const finalDrop = dropTargetRef.current;
-      const fromIdx = draggedIdxRef.current ?? sourceIdx;
+      const finalSlot = hoverSlotIndexRef.current;
 
       pointerDownRef.current = null;
+      currentPointerPosRef.current = null;
       initialDragIdxRef.current = null;
       setDragPointerPos(null);
       setDraggedIdx(null);
+      setHoverSlotIndex(null);
       draggedIdxRef.current = null;
-      setDropTarget(null);
-      dropTargetRef.current = null;
+      hoverSlotIndexRef.current = null;
 
       if (wasDragging) {
-        if (finalDrop && fromIdx !== null) {
-          const toIdx = calculateDropDestination(
-            fromIdx,
-            finalDrop.index,
-            finalDrop.position === 'after',
-            pages.length
-          );
-          if (toIdx !== fromIdx) {
-            onReorderPages(fromIdx, toIdx);
-            const nextSelection = new Set([toIdx]);
-            setSelectedIndices(nextSelection);
-            selectedIndicesRef.current = nextSelection;
-            setLastSelectedIdx(toIdx);
-            onSelectPage(toIdx);
-          }
+        if (finalSlot !== null && finalSlot !== sourceIdx) {
+          // Instant reordering on drop - no extra confirmation or Done button required
+          onReorderPages(sourceIdx, finalSlot);
+          const nextSelection = new Set([finalSlot]);
+          setSelectedIndices(nextSelection);
+          selectedIndicesRef.current = nextSelection;
+          setLastSelectedIdx(finalSlot);
+          onSelectPage(finalSlot);
         }
       } else {
         // Normal card click
@@ -343,14 +370,72 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
     onSelectPage,
     startAutoScroll,
     stopAutoScroll,
+    updateHoverSlot,
     lastSelectedIdx,
     selectedIndices,
   ]);
 
+  // Real-time preview order: surrounding pages move dynamically while dragging to open up the gap
+  const displayItems = React.useMemo(() => {
+    if (draggedIdx === null || hoverSlotIndex === null) {
+      return pages.map((page, idx) => ({
+        key: page.id || `organizer-page-${page.originalPageIndex ?? idx}-${idx}`,
+        isGap: false,
+        page,
+        originalIndex: idx,
+        slotIndex: idx,
+      }));
+    }
+
+    const targetSlot = Math.max(0, Math.min(pages.length - 1, hoverSlotIndex));
+    const otherPages: { page: PageInfo; origIdx: number }[] = [];
+    pages.forEach((p, idx) => {
+      if (idx !== draggedIdx) {
+        otherPages.push({ page: p, origIdx: idx });
+      }
+    });
+
+    const items: {
+      key: string;
+      isGap: boolean;
+      page: PageInfo;
+      originalIndex: number;
+      slotIndex: number;
+    }[] = [];
+
+    let otherPointer = 0;
+    for (let slot = 0; slot < pages.length; slot++) {
+      if (slot === targetSlot) {
+        items.push({
+          key: `gap-placeholder-${pages[draggedIdx]?.id || draggedIdx}`,
+          isGap: true,
+          page: pages[draggedIdx],
+          originalIndex: draggedIdx,
+          slotIndex: slot,
+        });
+      } else {
+        const item = otherPages[otherPointer++];
+        if (item) {
+          items.push({
+            key: item.page.id || `organizer-page-${item.page.originalPageIndex ?? item.origIdx}-${item.origIdx}`,
+            isGap: false,
+            page: item.page,
+            originalIndex: item.origIdx,
+            slotIndex: slot,
+          });
+        }
+      }
+    }
+
+    return items;
+  }, [pages, draggedIdx, hoverSlotIndex]);
+
   // HTML5 Drag and Drop Handling (fallback with identical insertion logic)
   const handleDragStart = (e: React.DragEvent, index: number) => {
     draggedIdxRef.current = index;
+    hoverSlotIndexRef.current = index;
     setDraggedIdx(index);
+    setHoverSlotIndex(index);
 
     if (!selectedIndices.has(index)) {
       const single = new Set([index]);
@@ -368,84 +453,43 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
     }
   };
 
-  const handleDragOver = (e: React.DragEvent, index: number) => {
+  const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-
-    const fromIdx = draggedIdxRef.current;
-    if (fromIdx === null) return;
-
-    const cardRect = e.currentTarget.getBoundingClientRect();
-    const isAfter = e.clientX - cardRect.left > cardRect.width / 2;
-
-    if (index === fromIdx) {
-      if (dropTarget !== null) {
-        setDropTarget(null);
-        dropTargetRef.current = null;
-      }
-    } else if (index === fromIdx - 1 && isAfter) {
-      if (dropTarget !== null) {
-        setDropTarget(null);
-        dropTargetRef.current = null;
-      }
-    } else if (index === fromIdx + 1 && !isAfter) {
-      if (dropTarget !== null) {
-        setDropTarget(null);
-        dropTargetRef.current = null;
-      }
-    } else {
-      const nextDrop = {
-        index,
-        position: isAfter ? ('after' as const) : ('before' as const),
-      };
-      setDropTarget(nextDrop);
-      dropTargetRef.current = nextDrop;
-    }
+    updateHoverSlot(e.clientX, e.clientY);
   };
 
-  const handleDragLeave = (e: React.DragEvent, index: number) => {
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setDropTarget((prev) => (prev?.index === index ? null : prev));
-    if (dropTargetRef.current?.index === index) {
-      dropTargetRef.current = null;
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent, targetIndex: number) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     stopAutoScroll();
 
-    const fromIdx = initialDragIdxRef.current ?? draggedIdxRef.current ?? draggedIdx;
-    if (fromIdx !== null) {
-      const cardRect = e.currentTarget.getBoundingClientRect();
-      const isAfter = e.clientX - cardRect.left > cardRect.width / 2;
-      const toIdx = calculateDropDestination(fromIdx, targetIndex, isAfter, pages.length);
+    const fromIdx = draggedIdxRef.current;
+    const toSlot = hoverSlotIndexRef.current;
 
-      if (toIdx !== fromIdx) {
-        onReorderPages(fromIdx, toIdx);
-        const nextSelection = new Set([toIdx]);
-        setSelectedIndices(nextSelection);
-        selectedIndicesRef.current = nextSelection;
-        setLastSelectedIdx(toIdx);
-        onSelectPage(toIdx);
-      }
+    if (fromIdx !== null && toSlot !== null && fromIdx !== toSlot) {
+      onReorderPages(fromIdx, toSlot);
+      const nextSelection = new Set([toSlot]);
+      setSelectedIndices(nextSelection);
+      selectedIndicesRef.current = nextSelection;
+      setLastSelectedIdx(toSlot);
+      onSelectPage(toSlot);
     }
 
     draggedIdxRef.current = null;
+    hoverSlotIndexRef.current = null;
     initialDragIdxRef.current = null;
     setDraggedIdx(null);
-    setDropTarget(null);
-    dropTargetRef.current = null;
+    setHoverSlotIndex(null);
   };
 
   const handleDragEnd = () => {
     stopAutoScroll();
     draggedIdxRef.current = null;
+    hoverSlotIndexRef.current = null;
     initialDragIdxRef.current = null;
     setDraggedIdx(null);
-    setDropTarget(null);
-    dropTargetRef.current = null;
+    setHoverSlotIndex(null);
   };
 
   if (!isOpen) return null;
@@ -692,50 +736,58 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
       {/* Pages Grid Container */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-6">
         <div className={`grid ${gridClasses}`}>
-          {pages.map((page, idx) => {
+          {displayItems.map((item) => {
+            if (item.isGap) {
+              return (
+                <div
+                  key={item.key}
+                  data-organizer-card-slot={item.slotIndex}
+                  className="relative rounded-xl border-2 border-dashed border-blue-500 bg-blue-500/10 shadow-[0_0_24px_rgba(59,130,246,0.35)] flex flex-col items-center justify-center p-4 min-h-[220px] transition-all duration-150 select-none animate-in fade-in zoom-in-95"
+                >
+                  {/* Top glowing insertion line */}
+                  <div className="absolute inset-x-4 top-2 h-1 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,1)]" />
+
+                  {/* Center drop badge */}
+                  <div className="flex items-center space-x-2 px-3.5 py-1.5 bg-blue-600/30 border border-blue-400/60 rounded-full text-blue-200 text-xs font-bold shadow-md">
+                    <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                    <span>Place Page {draggedIdx! + 1} Here</span>
+                  </div>
+
+                  <span className="text-[11px] text-blue-300 font-mono mt-2 font-semibold">
+                    Position #{item.slotIndex + 1} of {pages.length}
+                  </span>
+
+                  {/* Bottom glowing insertion line */}
+                  <div className="absolute inset-x-4 bottom-2 h-1 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,1)]" />
+                </div>
+              );
+            }
+
+            const page = item.page;
+            const idx = item.originalIndex;
             const isSelected = selectedIndices.has(idx);
-            const isDragging = idx === draggedIdx;
             const isCurrent = idx === activePageIndex;
-            const showIndicatorBefore =
-              dropTarget?.index === idx && dropTarget.position === 'before';
-            const showIndicatorAfter =
-              dropTarget?.index === idx && dropTarget.position === 'after';
 
             const pageObjects = pageObjectsMap?.get(idx) || EMPTY_OBJECTS;
             const pageMods = modifications?.[idx];
 
             return (
               <div
-                key={page.id || `organizer-page-${page.originalPageIndex ?? idx}-${idx}`}
+                key={item.key}
+                data-organizer-card-slot={item.slotIndex}
                 data-organizer-card-idx={idx}
                 draggable
                 onPointerDown={(e) => handlePointerDown(e, idx)}
                 onDragStart={(e) => handleDragStart(e, idx)}
-                onDragOver={(e) => handleDragOver(e, idx)}
-                onDragLeave={(e) => handleDragLeave(e, idx)}
-                onDrop={(e) => handleDrop(e, idx)}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
                 onDragEnd={handleDragEnd}
                 className={`group relative rounded-xl p-3 border transition-all duration-150 flex flex-col items-center select-none ${
-                  isDragging
-                    ? 'opacity-35 scale-[0.98] border-dashed border-blue-400 bg-blue-500/10 ring-2 ring-blue-500/40 shadow-inner'
-                    : isSelected
+                  isSelected
                     ? 'border-blue-500 bg-[#202430] ring-2 ring-blue-500/60 shadow-lg cursor-grab active:cursor-grabbing'
                     : 'border-[#2d3039] bg-[#1a1b20] hover:border-[#424654] hover:bg-[#202228] cursor-grab active:cursor-grabbing'
                 }`}
               >
-                {/* Clear Insertion Indicators with Top/Bottom Notch Accents */}
-                {showIndicatorBefore && (
-                  <div className="absolute -left-2 top-0 bottom-0 w-1.5 rounded-full bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,1)] z-40 pointer-events-none flex flex-col justify-between items-center py-0.5 animate-in fade-in zoom-in-y duration-75">
-                    <div className="w-2.5 h-2.5 rounded-full bg-blue-400 border-2 border-white shadow-md -mt-1.5" />
-                    <div className="w-2.5 h-2.5 rounded-full bg-blue-400 border-2 border-white shadow-md -mb-1.5" />
-                  </div>
-                )}
-                {showIndicatorAfter && (
-                  <div className="absolute -right-2 top-0 bottom-0 w-1.5 rounded-full bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,1)] z-40 pointer-events-none flex flex-col justify-between items-center py-0.5 animate-in fade-in zoom-in-y duration-75">
-                    <div className="w-2.5 h-2.5 rounded-full bg-blue-400 border-2 border-white shadow-md -mt-1.5" />
-                    <div className="w-2.5 h-2.5 rounded-full bg-blue-400 border-2 border-white shadow-md -mb-1.5" />
-                  </div>
-                )}
 
                 {/* Inner Card Content: ignore pointer events on children during dragging so dragover/drop always hits card */}
                 <div className={`w-full flex flex-col items-center ${draggedIdx !== null ? 'pointer-events-none' : ''}`}>
@@ -876,7 +928,7 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
         </div>
       </div>
 
-      {/* Floating Drag Visual Feedback */}
+      {/* Floating Drag Visual Feedback with Live Page Thumbnail */}
       {dragPointerPos && draggedIdx !== null && (
         <div
           style={{
@@ -885,36 +937,44 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
             top: dragPointerPos.y + 16,
             pointerEvents: 'none',
             zIndex: 9999,
+            width: thumbnailZoom === 'sm' ? 140 : thumbnailZoom === 'lg' ? 220 : 180,
           }}
-          className="flex items-center space-x-2.5 px-3.5 py-2 bg-[#1a1c24]/95 border border-blue-500 rounded-xl shadow-2xl backdrop-blur-md ring-2 ring-blue-500/60 text-xs font-semibold text-white select-none animate-in zoom-in-95 duration-75"
+          className="rounded-xl border-2 border-blue-500 bg-[#1e2029]/95 shadow-[0_20px_40px_rgba(0,0,0,0.7)] backdrop-blur-md p-2.5 flex flex-col items-center text-white select-none pointer-events-none transform -rotate-1 scale-105 transition-transform"
         >
-          <div className="w-6 h-6 rounded-md bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-blue-400">
-            <GripVertical className="w-3.5 h-3.5" />
-          </div>
-          <div className="flex flex-col">
-            <span className="font-bold">Page {draggedIdx + 1}</span>
-            <span className="text-[10px] text-blue-300 font-normal">
-              {dropTarget
-                ? dropTarget.position === 'after'
-                  ? `Place after Page ${dropTarget.index + 1}`
-                  : `Place before Page ${dropTarget.index + 1}`
-                : 'Drag to reorder position'}
+          <div className="w-full flex items-center justify-between mb-1.5 text-xs text-neutral-300 font-semibold">
+            <div className="flex items-center space-x-1.5">
+              <GripVertical className="w-3.5 h-3.5 text-blue-400" />
+              <span>Page {draggedIdx + 1}</span>
+            </div>
+            <span className="text-[10px] text-blue-300 font-mono bg-blue-500/20 px-1.5 py-0.5 rounded border border-blue-500/30">
+              #{hoverSlotIndex !== null ? hoverSlotIndex + 1 : draggedIdx + 1}
             </span>
+          </div>
+
+          {/* Thumbnail preview inside ghost */}
+          <div className="w-full rounded-lg overflow-hidden bg-black/40 border border-[#353846]">
+            <PageThumbnailPreview
+              key={`ghost-thumb-${pages[draggedIdx]?.id || draggedIdx}`}
+              pdfDocProxy={pdfDocProxy}
+              page={pages[draggedIdx]}
+              pageObjects={pageObjectsMap?.get(draggedIdx) || EMPTY_OBJECTS}
+              pageMods={modifications?.[draggedIdx]}
+            />
           </div>
         </div>
       )}
 
-      {/* Bottom Footer Info & Confirmation */}
+      {/* Bottom Footer Info & Close */}
       <div className="h-14 px-6 border-t border-[#25272e] bg-[#16171b] flex items-center justify-between shrink-0 text-xs text-neutral-400">
         <div>
-          Drag and drop any page card to rearrange order. All edits, text, images, and drawings stay attached to their page.
+          Drag and drop any page card to rearrange order. Changes apply instantly with full Undo (<span className="text-neutral-200 font-semibold">Ctrl+Z</span>) and Redo (<span className="text-neutral-200 font-semibold">Ctrl+Y</span>) support.
         </div>
         <div className="flex items-center space-x-3">
           <button
             onClick={onClose}
-            className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg shadow-sm transition cursor-pointer"
+            className="px-5 py-2 bg-[#252730] hover:bg-[#2d303a] border border-[#353844] text-white font-semibold rounded-lg shadow-sm transition cursor-pointer"
           >
-            Done
+            Close
           </button>
         </div>
       </div>

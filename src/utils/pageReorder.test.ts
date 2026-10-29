@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PDFDocument } from 'pdf-lib';
 import { applyModificationsAndExport, extractPDFForgeState } from './pdfModifier';
+import { calculateDropDestination } from './pageReorder';
 import { PageInfo, DocumentModifications, PDFObject, PageModifications } from '../types/pdf';
 
 /**
@@ -64,26 +65,6 @@ function rebuildIndexedDocument(
   return { nextPages, nextObjectsMap, nextMods };
 }
 
-/**
- * Calculates drop destination index matching PageOrganizerModal.tsx
- */
-function calculateDropDestination(
-  fromIdx: number,
-  targetIndex: number,
-  isAfter: boolean,
-  totalPages: number
-): number {
-  let dest = targetIndex;
-  if (isAfter) {
-    dest = fromIdx < targetIndex ? targetIndex : targetIndex + 1;
-  } else {
-    dest = fromIdx < targetIndex ? targetIndex - 1 : targetIndex;
-  }
-  if (dest === fromIdx && targetIndex !== fromIdx) {
-    dest = targetIndex;
-  }
-  return Math.max(0, Math.min(totalPages - 1, dest));
-}
 
 test('calculateDropDestination handles forward, backward, and adjacent drops accurately', () => {
   const totalPages = 5; // 0, 1, 2, 3, 4

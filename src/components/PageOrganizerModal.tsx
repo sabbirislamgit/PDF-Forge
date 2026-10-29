@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import {
   PageInfo,
   DocumentModifications,
   PDFObject,
 } from '../types/pdf';
+import { calculateDropDestination } from '../utils/pageReorder';
 import { PageThumbnailPreview } from './ThumbnailSidebar';
 import {
   GripVertical,
@@ -70,8 +71,9 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
   const [thumbnailZoom, setThumbnailZoom] = useState<'sm' | 'md' | 'lg'>('md');
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Synchronous refs for 100% reliable mouse and HTML5 drag-and-drop operations
+  // Synchronous refs for smooth, responsive drag-and-drop & auto-scrolling
   const draggedIdxRef = useRef<number | null>(null);
+  const dropTargetRef = useRef<{ index: number; position: 'before' | 'after' } | null>(null);
   const pointerDownRef = useRef<{
     startX: number;
     startY: number;
@@ -80,6 +82,38 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
   } | null>(null);
   const initialDragIdxRef = useRef<number | null>(null);
   const selectedIndicesRef = useRef<Set<number>>(selectedIndices);
+
+  const autoScrollRafRef = useRef<number | null>(null);
+  const scrollSpeedRef = useRef<number>(0);
+
+  const stopAutoScroll = useCallback(() => {
+    if (autoScrollRafRef.current !== null) {
+      cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+    }
+    scrollSpeedRef.current = 0;
+  }, []);
+
+  const startAutoScroll = useCallback(() => {
+    if (autoScrollRafRef.current === null) {
+      const step = () => {
+        if (scrollSpeedRef.current !== 0 && scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop += scrollSpeedRef.current;
+          autoScrollRafRef.current = requestAnimationFrame(step);
+        } else {
+          autoScrollRafRef.current = null;
+        }
+      };
+      autoScrollRafRef.current = requestAnimationFrame(step);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopAutoScroll();
+    };
+  }, [stopAutoScroll]);
+
   useEffect(() => {
     selectedIndicesRef.current = selectedIndices;
   }, [selectedIndices]);
@@ -153,7 +187,7 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
     }
   };
 
-  // Mouse Pointer Drag Handling: immediately updates thumbnail order and internal document order
+  // Mouse Pointer Drag Handling: simple, fluid, high-performance drag and drop with live insertion indicator
   const handlePointerDown = (e: React.PointerEvent, index: number) => {
     if (e.button !== 0) return; // Only primary mouse button
     if ((e.target as HTMLElement).closest('input[type="checkbox"], button')) return;
@@ -178,7 +212,7 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
       const dy = e.clientY - info.startY;
 
       if (!info.isDragging) {
-        if (Math.hypot(dx, dy) > 4) {
+        if (Math.hypot(dx, dy) >= 5) {
           info.isDragging = true;
           const currentIdx = info.sourceIdx;
           draggedIdxRef.current = currentIdx;
@@ -195,40 +229,75 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
       } else {
         setDragPointerPos({ x: e.clientX, y: e.clientY });
 
-        // Hit-test card slot under cursor
-        const el = document.elementFromPoint(e.clientX, e.clientY);
-        const card = el?.closest('[data-organizer-card-idx]');
-        if (card) {
+        // Auto-scroll when dragging near the top or bottom of the scroll container
+        const container = scrollContainerRef.current;
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          const topThreshold = rect.top + 70;
+          const bottomThreshold = rect.bottom - 70;
+
+          if (e.clientY < topThreshold) {
+            const intensity = Math.min(1, Math.max(0, (topThreshold - e.clientY) / 70));
+            scrollSpeedRef.current = -Math.round(4 + intensity * 20);
+            startAutoScroll();
+          } else if (e.clientY > bottomThreshold) {
+            const intensity = Math.min(1, Math.max(0, (e.clientY - bottomThreshold) / 70));
+            scrollSpeedRef.current = Math.round(4 + intensity * 20);
+            startAutoScroll();
+          } else {
+            stopAutoScroll();
+          }
+        }
+
+        // Calculate insertion indicator position from card under cursor
+        const elements = document.elementsFromPoint(e.clientX, e.clientY);
+        let card: Element | null = null;
+        for (const el of elements) {
+          const match = el.closest('[data-organizer-card-idx]');
+          if (match) {
+            card = match;
+            break;
+          }
+        }
+
+        const fromIdx = draggedIdxRef.current;
+        if (card && fromIdx !== null) {
           const targetIdx = Number(card.getAttribute('data-organizer-card-idx'));
-          const currentFrom = draggedIdxRef.current;
-          if (
-            !Number.isNaN(targetIdx) &&
-            currentFrom !== null &&
-            targetIdx !== currentFrom &&
-            targetIdx >= 0 &&
-            targetIdx < pages.length
-          ) {
-            // Immediately update thumbnail order and internal document page order!
-            onReorderPages(currentFrom, targetIdx, { skipToast: true, skipHistory: true });
-            draggedIdxRef.current = targetIdx;
-            setDraggedIdx(targetIdx);
-            const nextSelection = new Set([targetIdx]);
-            setSelectedIndices(nextSelection);
-            selectedIndicesRef.current = nextSelection;
-            setLastSelectedIdx(targetIdx);
+          if (!Number.isNaN(targetIdx) && targetIdx >= 0 && targetIdx < pages.length) {
+            const cardRect = card.getBoundingClientRect();
+            const isAfter = e.clientX - cardRect.left > cardRect.width / 2;
+
+            if (targetIdx === fromIdx) {
+              setDropTarget(null);
+              dropTargetRef.current = null;
+            } else if (targetIdx === fromIdx - 1 && isAfter) {
+              setDropTarget(null);
+              dropTargetRef.current = null;
+            } else if (targetIdx === fromIdx + 1 && !isAfter) {
+              setDropTarget(null);
+              dropTargetRef.current = null;
+            } else {
+              const nextDrop = {
+                index: targetIdx,
+                position: isAfter ? ('after' as const) : ('before' as const),
+              };
+              setDropTarget(nextDrop);
+              dropTargetRef.current = nextDrop;
+            }
           }
         }
       }
     };
 
     const handleWindowPointerUp = (e: PointerEvent) => {
+      stopAutoScroll();
       const info = pointerDownRef.current;
       if (!info) return;
 
       const wasDragging = info.isDragging;
       const sourceIdx = info.sourceIdx;
-      const finalIdx = draggedIdxRef.current ?? sourceIdx;
-      const initialIdx = initialDragIdxRef.current ?? sourceIdx;
+      const finalDrop = dropTargetRef.current;
+      const fromIdx = draggedIdxRef.current ?? sourceIdx;
 
       pointerDownRef.current = null;
       initialDragIdxRef.current = null;
@@ -236,13 +305,23 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
       setDraggedIdx(null);
       draggedIdxRef.current = null;
       setDropTarget(null);
+      dropTargetRef.current = null;
 
       if (wasDragging) {
-        if (finalIdx !== initialIdx) {
-          if (onCommitReorder) {
-            onCommitReorder(initialIdx, finalIdx);
-          } else {
-            onReorderPages(initialIdx, finalIdx);
+        if (finalDrop && fromIdx !== null) {
+          const toIdx = calculateDropDestination(
+            fromIdx,
+            finalDrop.index,
+            finalDrop.position === 'after',
+            pages.length
+          );
+          if (toIdx !== fromIdx) {
+            onReorderPages(fromIdx, toIdx);
+            const nextSelection = new Set([toIdx]);
+            setSelectedIndices(nextSelection);
+            selectedIndicesRef.current = nextSelection;
+            setLastSelectedIdx(toIdx);
+            onSelectPage(toIdx);
           }
         }
       } else {
@@ -257,9 +336,18 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
       window.removeEventListener('pointermove', handleWindowPointerMove);
       window.removeEventListener('pointerup', handleWindowPointerUp);
     };
-  }, [isOpen, pages.length, onReorderPages, onCommitReorder]);
+  }, [
+    isOpen,
+    pages.length,
+    onReorderPages,
+    onSelectPage,
+    startAutoScroll,
+    stopAutoScroll,
+    lastSelectedIdx,
+    selectedIndices,
+  ]);
 
-  // HTML5 Drag and Drop Handling (immediate synchronization)
+  // HTML5 Drag and Drop Handling (fallback with identical insertion logic)
   const handleDragStart = (e: React.DragEvent, index: number) => {
     draggedIdxRef.current = index;
     setDraggedIdx(index);
@@ -284,37 +372,63 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
 
-    const activeFrom = draggedIdxRef.current ?? draggedIdx;
-    if (activeFrom === null || activeFrom === index) {
-      if (dropTarget !== null) setDropTarget(null);
-      return;
-    }
+    const fromIdx = draggedIdxRef.current;
+    if (fromIdx === null) return;
 
-    // Immediately update thumbnail order and internal document page order during drag
-    onReorderPages(activeFrom, index, { skipToast: true, skipHistory: true });
-    draggedIdxRef.current = index;
-    setDraggedIdx(index);
-    const nextSelection = new Set([index]);
-    setSelectedIndices(nextSelection);
-    selectedIndicesRef.current = nextSelection;
-    setLastSelectedIdx(index);
+    const cardRect = e.currentTarget.getBoundingClientRect();
+    const isAfter = e.clientX - cardRect.left > cardRect.width / 2;
+
+    if (index === fromIdx) {
+      if (dropTarget !== null) {
+        setDropTarget(null);
+        dropTargetRef.current = null;
+      }
+    } else if (index === fromIdx - 1 && isAfter) {
+      if (dropTarget !== null) {
+        setDropTarget(null);
+        dropTargetRef.current = null;
+      }
+    } else if (index === fromIdx + 1 && !isAfter) {
+      if (dropTarget !== null) {
+        setDropTarget(null);
+        dropTargetRef.current = null;
+      }
+    } else {
+      const nextDrop = {
+        index,
+        position: isAfter ? ('after' as const) : ('before' as const),
+      };
+      setDropTarget(nextDrop);
+      dropTargetRef.current = nextDrop;
+    }
   };
 
   const handleDragLeave = (e: React.DragEvent, index: number) => {
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
     setDropTarget((prev) => (prev?.index === index ? null : prev));
+    if (dropTargetRef.current?.index === index) {
+      dropTargetRef.current = null;
+    }
   };
 
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
     e.stopPropagation();
+    stopAutoScroll();
 
     const fromIdx = initialDragIdxRef.current ?? draggedIdxRef.current ?? draggedIdx;
-    if (fromIdx !== null && fromIdx !== targetIndex) {
-      if (onCommitReorder) {
-        onCommitReorder(fromIdx, targetIndex);
-      } else {
-        onReorderPages(fromIdx, targetIndex);
+    if (fromIdx !== null) {
+      const cardRect = e.currentTarget.getBoundingClientRect();
+      const isAfter = e.clientX - cardRect.left > cardRect.width / 2;
+      const toIdx = calculateDropDestination(fromIdx, targetIndex, isAfter, pages.length);
+
+      if (toIdx !== fromIdx) {
+        onReorderPages(fromIdx, toIdx);
+        const nextSelection = new Set([toIdx]);
+        setSelectedIndices(nextSelection);
+        selectedIndicesRef.current = nextSelection;
+        setLastSelectedIdx(toIdx);
+        onSelectPage(toIdx);
       }
     }
 
@@ -322,13 +436,16 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
     initialDragIdxRef.current = null;
     setDraggedIdx(null);
     setDropTarget(null);
+    dropTargetRef.current = null;
   };
 
   const handleDragEnd = () => {
+    stopAutoScroll();
     draggedIdxRef.current = null;
     initialDragIdxRef.current = null;
     setDraggedIdx(null);
     setDropTarget(null);
+    dropTargetRef.current = null;
   };
 
   if (!isOpen) return null;
@@ -598,20 +715,26 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
                 onDragLeave={(e) => handleDragLeave(e, idx)}
                 onDrop={(e) => handleDrop(e, idx)}
                 onDragEnd={handleDragEnd}
-                className={`group relative rounded-xl p-3 border transition-all duration-150 flex flex-col items-center cursor-grab active:cursor-grabbing select-none ${
+                className={`group relative rounded-xl p-3 border transition-all duration-150 flex flex-col items-center select-none ${
                   isDragging
-                    ? 'ring-2 ring-blue-500 bg-blue-500/20 border-blue-400 scale-[0.98] shadow-2xl z-20'
+                    ? 'opacity-35 scale-[0.98] border-dashed border-blue-400 bg-blue-500/10 ring-2 ring-blue-500/40 shadow-inner'
                     : isSelected
-                    ? 'border-blue-500 bg-[#202430] ring-2 ring-blue-500/60 shadow-lg'
-                    : 'border-[#2d3039] bg-[#1a1b20] hover:border-[#424654] hover:bg-[#202228]'
+                    ? 'border-blue-500 bg-[#202430] ring-2 ring-blue-500/60 shadow-lg cursor-grab active:cursor-grabbing'
+                    : 'border-[#2d3039] bg-[#1a1b20] hover:border-[#424654] hover:bg-[#202228] cursor-grab active:cursor-grabbing'
                 }`}
               >
-                {/* Insertion Indicators */}
+                {/* Clear Insertion Indicators with Top/Bottom Notch Accents */}
                 {showIndicatorBefore && (
-                  <div className="absolute -left-2.5 top-2 bottom-2 w-1.5 rounded-full bg-blue-500 shadow-lg shadow-blue-500/80 z-30 pointer-events-none" />
+                  <div className="absolute -left-2 top-0 bottom-0 w-1.5 rounded-full bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,1)] z-40 pointer-events-none flex flex-col justify-between items-center py-0.5 animate-in fade-in zoom-in-y duration-75">
+                    <div className="w-2.5 h-2.5 rounded-full bg-blue-400 border-2 border-white shadow-md -mt-1.5" />
+                    <div className="w-2.5 h-2.5 rounded-full bg-blue-400 border-2 border-white shadow-md -mb-1.5" />
+                  </div>
                 )}
                 {showIndicatorAfter && (
-                  <div className="absolute -right-2.5 top-2 bottom-2 w-1.5 rounded-full bg-blue-500 shadow-lg shadow-blue-500/80 z-30 pointer-events-none" />
+                  <div className="absolute -right-2 top-0 bottom-0 w-1.5 rounded-full bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,1)] z-40 pointer-events-none flex flex-col justify-between items-center py-0.5 animate-in fade-in zoom-in-y duration-75">
+                    <div className="w-2.5 h-2.5 rounded-full bg-blue-400 border-2 border-white shadow-md -mt-1.5" />
+                    <div className="w-2.5 h-2.5 rounded-full bg-blue-400 border-2 border-white shadow-md -mb-1.5" />
+                  </div>
                 )}
 
                 {/* Inner Card Content: ignore pointer events on children during dragging so dragover/drop always hits card */}
@@ -763,11 +886,21 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
             pointerEvents: 'none',
             zIndex: 9999,
           }}
-          className="flex items-center space-x-2 px-3.5 py-2 bg-[#1a1c24]/95 border border-blue-500 rounded-xl shadow-2xl backdrop-blur-md ring-2 ring-blue-500/50 text-xs font-semibold text-white select-none animate-in zoom-in-95 duration-75"
+          className="flex items-center space-x-2.5 px-3.5 py-2 bg-[#1a1c24]/95 border border-blue-500 rounded-xl shadow-2xl backdrop-blur-md ring-2 ring-blue-500/60 text-xs font-semibold text-white select-none animate-in zoom-in-95 duration-75"
         >
-          <GripVertical className="w-4 h-4 text-blue-400" />
-          <span>Moving Page {draggedIdx + 1}</span>
-          <span className="text-[10px] text-blue-300 font-normal">Release to place</span>
+          <div className="w-6 h-6 rounded-md bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-blue-400">
+            <GripVertical className="w-3.5 h-3.5" />
+          </div>
+          <div className="flex flex-col">
+            <span className="font-bold">Page {draggedIdx + 1}</span>
+            <span className="text-[10px] text-blue-300 font-normal">
+              {dropTarget
+                ? dropTarget.position === 'after'
+                  ? `Place after Page ${dropTarget.index + 1}`
+                  : `Place before Page ${dropTarget.index + 1}`
+                : 'Drag to reorder position'}
+            </span>
+          </div>
         </div>
       )}
 

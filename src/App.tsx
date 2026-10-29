@@ -80,6 +80,7 @@ import {
 } from './utils/batchCrop';
 import { calculateTextBoxMetrics } from './utils/textEngine';
 import { loadSavedImportedFonts } from './utils/fontSystem';
+import { setupDesktopEnvironment, isBrowserNavigationKey } from './utils/desktopEnvironment';
 import { EmptyState } from './components/EmptyState';
 import { StatusBar } from './components/StatusBar';
 import { Trash2, Undo2, X, Check, AlertTriangle, Maximize2 } from 'lucide-react';
@@ -328,6 +329,28 @@ export default function App() {
     window.addEventListener('resize', handleBreakpointResize);
     return () => window.removeEventListener('resize', handleBreakpointResize);
   }, []);
+
+  // Native Desktop Environment Shell: disable default browser context menus & accidental refresh actions
+  useEffect(() => {
+    const cleanup = setupDesktopEnvironment();
+    return cleanup;
+  }, []);
+
+  // Prevent accidental application reloads or closing when there are unsaved document edits
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      const hasUnsavedEdits =
+        Boolean(filename) &&
+        (Object.keys(modifications).length > 0 ||
+          (pageObjectsMap && pageObjectsMap.size > 0));
+      if (hasUnsavedEdits) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [filename, modifications, pageObjectsMap]);
 
   // Initialize and register custom imported fonts between sessions
   useEffect(() => {
@@ -3786,6 +3809,12 @@ export default function App() {
   // Keyboard Shortcuts Listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Suppress accidental browser reloads and navigation (F5, Ctrl+R, etc.)
+      if (isBrowserNavigationKey(e)) {
+        e.preventDefault();
+        return;
+      }
+
       const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
       const isCmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
 
